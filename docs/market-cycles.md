@@ -1,6 +1,6 @@
 # Market cycles and campaign replay
 
-New cyclical campaigns use simulation rules `1.1.0`. Existing `1.0.0` campaigns retain their original demand, supply, finances, and replay results. Starting a new campaign is an explicit choice; loading a save never changes its rules.
+One-year cyclical campaigns use simulation rules `1.1.0`; three-year campaigns use the compatible cycle extension in `1.2.0`, documented in [Multi-year campaigns](multi-year.md). Existing `1.0.0` campaigns retain their original demand, supply, finances, and replay results. Starting a new campaign is an explicit choice; loading a save never changes its rules.
 
 These are **synthetic educational scenarios**, not calibrated CNH forecasts or a reconstruction of historical equipment cycles. They demonstrate why an operator should separate an opening forecast, management decisions, and conditions that became known later.
 

@@ -2,12 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { parseHTML } from 'linkedom';
-import { PLAN_FIELDS, advanceMonth, balanceSheet, createInitialState, defaultPlan, forecast } from '../src/simulation.js';
+import { PLAN_FIELDS, PRODUCTS, advanceMonth, balanceSheet, createInitialState, defaultPlan, forecast } from '../src/simulation.js';
 import { getMarketIntelligence, projectBusiness } from '../src/business-intelligence.js';
 import { getUnitEconomics } from '../src/unit-economics.js';
 import { getInvestmentOptions } from '../src/investments.js';
 import { getMarketPosition } from '../src/market-position.js';
 import { getFactoryDiagnostics, getCostLedger } from '../src/factory-diagnostics.js';
+import { getFinancingInsights, getMonthlyBalanceSheet } from '../src/financial-learning.js';
+import { getBoardDashboard, getBoardReview } from '../src/board-mandate.js';
 import { STORAGE_KEY, exportSave, parseSave } from '../src/persistence.js';
 
 // In-process DOM integration only. This exercises the real application/model and
@@ -46,6 +48,11 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
   const selectDescriptor = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value');
   Object.defineProperty(window.HTMLSelectElement.prototype, 'value', {
     ...selectDescriptor,
+    get() {
+      // Browsers select the first enabled option by default; Linkedom leaves
+      // value undefined when no explicit selected attribute was supplied.
+      return selectDescriptor.get.call(this) ?? [...this.options].find(option => !option.disabled)?.value ?? '';
+    },
     set(value) {
       // Linkedom clears selection when any option.selected is assigned. Clear
       // the old attributes first, then select the matching option once.
@@ -94,6 +101,7 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
   };
   const saved = () => parseSave(storage.getItem(STORAGE_KEY));
   const money = (value) => `${value < 0 ? '−' : ''}$${Math.abs(value).toFixed(1)}m`;
+  const statementMoney = value => `${value < 0 ? '−' : ''}$${Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: 3, maximumFractionDigits: 3 })}m`;
   const unitMoney = (value) => value == null ? '—' : `${value < 0 ? '−' : ''}$${Math.abs(value).toFixed(1)}k`;
   const marketMoney = value => value >= 1000 ? `$${(value / 1000).toFixed(2)}bn` : money(value);
   const share = value => `${(value * 100).toFixed(1)}%`;
@@ -106,6 +114,22 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     }
     assert.fail(message);
   };
+  const restoreCampaign = async (state, plan = defaultPlan(state)) => {
+    $('#toast').textContent = '';
+    importFile($('#import-file'), exportSave({ ...saved(), state, plan }));
+    await waitFor(() => $('#toast').textContent === 'Campaign restored.', 'campaign fixture import did not complete');
+    assert.deepEqual(saved().state, state);
+    assert.deepEqual(saved().plan, plan);
+  };
+  const sustainablePlan = state => {
+    const plan = { ...defaultPlan(state), quality: 1.5, maintenance: 1.2, training: 0.8, partsBuffer: 5 };
+    const expected = forecast(state, plan);
+    for (const product of PRODUCTS) {
+      const flow = expected.report.products.find(candidate => candidate.id === product.id);
+      plan[`${product.id}Production`] = Math.min(Math.ceil(product.capacity * 1.4), Math.max(0, Math.ceil(flow.dealerOrders + 8 - state.products[product.id].finishedGoods)));
+    }
+    return plan;
+  };
   const tableValue = (label) => {
     const row = $$('#modal-content tbody tr').find((row) => row.children[0]?.textContent === label);
     assert.ok(row, `Missing financial statement row ${label}`);
@@ -116,7 +140,45 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.ok(row, `Missing balance-sheet row ${key}`);
     return row.children[column].textContent;
   };
+  const verifyMonthlyBalanceSheet = (state, month) => {
+    const statement = getMonthlyBalanceSheet(state, month);
+    assert.equal(statement.available, true);
+    const view = $(`[data-monthly-balance-sheet="${month}"]`);
+    assert.ok(view, `Missing actual balance sheet for month ${month}`);
+    for (const expected of statement.rows) {
+      const row = view.querySelector(`[data-balance-row="${expected.key}"]`);
+      assert.ok(row, `Missing monthly account ${expected.key}`);
+      assert.equal(row.children[1].textContent, statementMoney(expected.opening));
+      assert.equal(row.querySelector('[data-balance-closing]').textContent, statementMoney(expected.closing));
+      const change = row.querySelector('[data-balance-change]');
+      assert.ok(change.classList.contains(`financial-${expected.tone}`), `${expected.key} movement color should match its accounting meaning`);
+      assert.ok(change.textContent.includes(expected.movement), 'movement must be described in words as well as color');
+    }
+    assert.ok(view.querySelector('[data-balance-reconciliation]'));
+    assert.ok(view.querySelector('[data-monthly-income]'));
+    assert.ok(view.querySelector('[data-monthly-cash-bridge]'));
+    assert.equal(Math.abs(statement.reconciliation) < 1e-6, true);
+  };
+  const verifyBoardReview = (expected, scope = document) => {
+    assert.equal(expected.available, true);
+    const selector = `[data-board-review="${expected.month}"][data-board-kind="${expected.kind}"]`;
+    const view = scope.matches?.(selector) ? scope : scope.querySelector(selector);
+    assert.ok(view, `Missing ${expected.kind} board review for month ${expected.month}`);
+    assert.equal(Number(view.querySelector('[data-board-score]').textContent), expected.score);
+    assert.equal(view.querySelector('[data-board-grade]').textContent, expected.grade);
+    assert.equal(view.querySelector('[data-board-status]').textContent, expected.status);
+    for (const component of expected.components) {
+      const row = view.querySelector(`[data-board-metric="${component.id}"]`);
+      assert.ok(row, `Missing board objective ${component.id}`);
+      assert.equal(row.querySelector('[data-board-actual]').dataset.value, component.actual == null ? '' : String(component.actual));
+      assert.equal(Number(row.querySelector('[data-board-target]').dataset.value), component.target);
+      assert.equal(row.querySelector('[data-board-status]').textContent, component.status);
+      assert.doesNotMatch(row.textContent, /NaN|Infinity|undefined/);
+    }
+    return view;
+  };
   let januaryLesson;
+  let januaryBoardReview;
 
   await import('../src/main.js');
 
@@ -124,6 +186,8 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.match($('#command-panel').textContent, /A new season/);
     assert.equal($$('#main-nav [data-tab]').length, 6);
     assert.equal(saved().state.month, 0);
+    assert.equal(saved().state.version, '1.2.0', 'new campaigns should use the three-year model');
+    assert.equal(saved().state.campaignMonths, 36);
     assert.ok(saved().drafts.length >= 2, 'the opening campaign should offer meaningful plan alternatives');
     assert.match($('#save-indicator').textContent, /Saved on this device/);
     assert.ok($('#world .fallback-world'), 'missing-WebGL fallback should preserve business controls');
@@ -145,8 +209,30 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.doesNotMatch($('#command-panel').textContent, /NaN|Infinity|undefined/);
     click('[data-action="market-detail"]');
     assert.equal(dialog.open, true);
-    assert.equal($$('[data-market-timeline] tbody tr').length, 12);
+    assert.equal($$('[data-market-timeline] tbody tr').length, market.timeline.length);
     assert.match($('#modal-content').textContent, /illustrative|scenario|simulated/i);
+    assert.deepEqual(saved().state, before.state);
+    assert.deepEqual(saved().plan, before.plan);
+    click('[data-action="close-modal"]');
+  });
+
+  await t.test('the board publishes measurable monthly and quarterly goals before the first decision', async () => {
+    const before = saved();
+    const board = getBoardDashboard(before.state, before.plan);
+    click('[data-tab="briefing"]');
+    click('[data-action="board-review"]');
+    assert.ok($('[data-board-dashboard]'));
+    assert.equal(board.current, null, 'opening goals cannot be reported as achieved actual results');
+    assert.equal(board.next.month, 1);
+    verifyBoardReview(board.next, $('#modal-content'));
+    assert.equal($$('#modal-content [data-board-kind="actual"]').length, 0);
+    assert.match($('#modal-content').textContent, /target|goal/i);
+    assert.match($('#modal-content').textContent, /quarter/i);
+    assert.equal($$('[data-board-monthly-goals] tbody tr').length, 36, 'publish goals for each month of the full mandate');
+    assert.equal($$('[data-board-quarterly-goals] tbody tr').length, 12);
+    assert.match($('#modal-content').textContent, /forecast|projected|expected/i);
+    assert.match($('#modal-content').textContent, /share/i);
+    assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity/);
     assert.deepEqual(saved().state, before.state);
     assert.deepEqual(saved().plan, before.plan);
     click('[data-action="close-modal"]');
@@ -178,6 +264,12 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
       assert.equal($(`[data-projection-table="${type}"]`).querySelectorAll('thead th').length, fullYear.months.length + 1);
     }
     assert.equal($('#modal-content [data-kpi="ending-cash"]').textContent, money(fullYear.ending.cash));
+    click('[data-horizon="36"]');
+    const fullCampaign = projectBusiness(before.state, before.plan, 36);
+    assert.equal($('[data-projection-table="income"]').querySelectorAll('thead th').length, fullCampaign.months.length + 1);
+    assert.equal($('#modal-content [data-kpi="ending-cash"]').textContent, money(fullCampaign.ending.cash));
+    if (fullCampaign.months.some(month => month.month > 12)) assert.match($('#modal-content').textContent, /Year 2/);
+    if (fullCampaign.months.some(month => month.month > 24)) assert.match($('#modal-content').textContent, /Year 3/);
     assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
     assert.deepEqual(saved().state, before.state, 'changing projection horizon must not commit rounds');
     assert.deepEqual(saved().plan, before.plan, 'projections must not replace player decisions');
@@ -234,6 +326,53 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     }
   });
 
+  await t.test('customer APR and long-term investment guides explain the working decisions without applying alternatives', () => {
+    const before = saved();
+    const financing = getFinancingInsights(before.state, before.plan);
+    click('[data-tab="plan"]');
+    click('[data-plan-group="Commercial"]');
+    click('[data-action="financing-guide"]');
+    assert.ok($('[data-financing-guide]'));
+    assert.match($('[data-financing-rate-rules]').textContent, /7\.25%.*customer APR/);
+    assert.match($('[data-financing-rate-rules]').textContent, /7\.50% corporate/);
+    assert.match($('[data-financing-rate-rules]').textContent, /5\.50%.*funding/);
+    assert.equal($('[data-financing-demand-multiplier]').textContent, `${financing.selected.demandMultiplier.toFixed(3)}×`);
+    assert.match($('#modal-content').textContent, /existing loan cohorts keep their original APR/i);
+    assert.match($('#modal-content').textContent, /interest.*following month|interest.*next month/i);
+    const nextRows = $$('[data-financing-next-month] tbody tr');
+    const interest = nextRows.find(row => row.children[0].textContent === 'Interest from existing customer loans');
+    assert.deepEqual([...interest.children].slice(1).map(cell => cell.textContent), financing.options.map(option => statementMoney(option.next.interestIncome)));
+    const retail = nextRows.find(row => row.children[0].textContent === 'Customer retail sales');
+    assert.deepEqual([...retail.children].slice(1).map(cell => cell.textContent), financing.options.map(option => units(option.next.retailSales)));
+    assert.deepEqual(saved().state, before.state);
+    assert.deepEqual(saved().plan, before.plan);
+    click('[data-action="close-modal"]');
+    edit('#field-financingApr', 6.25);
+    click('[data-action="financing-guide"]');
+    const lowerRate = getFinancingInsights(before.state, saved().plan);
+    assert.equal($('[data-financing-demand-multiplier]').textContent, `${lowerRate.selected.demandMultiplier.toFixed(3)}×`);
+    assert.notEqual(lowerRate.selected.demandMultiplier, financing.selected.demandMultiplier, 'changing the working customer rate should change its demand effect');
+    assert.match($('[data-financing-rate-rules]').textContent, /6\.25%.*customer APR/);
+    assert.deepEqual(saved().state, before.state, 'explaining a new rate must not originate loans or commit the month');
+    click('[data-action="close-modal"]');
+    edit('#field-financingApr', before.plan.financingApr);
+    click('[data-plan-group="Investment"]');
+    click('[data-action="investment-guide"]');
+    assert.ok($('[data-investment-guide]'));
+    const explanations = $('[data-investment-explanation]').textContent;
+    assert.match(explanations, /capital expenditure/);
+    assert.match(explanations, /operating expense/);
+    assert.match(explanations, /0\.4 percentage points/);
+    assert.match(explanations, /0\.007/);
+    assert.match($('#modal-content').textContent, /April/);
+    assert.match($('#modal-content').textContent, /cash.*commit|cash.*spending/i);
+    assert.deepEqual(saved().state, before.state);
+    assert.deepEqual(saved().plan, before.plan);
+    assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+    click('[data-action="close-modal"]');
+    click('[data-plan-group="Commercial"]');
+  });
+
   await t.test('investment experiments compare horizons and explicitly apply only the selected budget to the working plan', () => {
     click('[data-tab="operations"]');
     const before = saved();
@@ -242,7 +381,7 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.equal($$('[data-investment-option]').length, 6, 'show the working baseline plus five targeted experiments');
     assert.equal($('[data-investment-horizon="6"]').getAttribute('aria-pressed'), 'true');
     assert.deepEqual(new Set($$('[data-investment-apply]').map(button => button.dataset.investmentApply)), new Set(['training', 'quality', 'maintenance', 'capacity', 'engineering']));
-    for (const horizon of ['3', 'year-end', '6', '3']) {
+    for (const horizon of ['3', 'year-end', 'campaign-end', '6', '3']) {
       click(`[data-investment-horizon="${horizon}"]`);
       assert.equal($(`[data-investment-horizon="${horizon}"]`).getAttribute('aria-pressed'), 'true');
       assert.deepEqual(saved().state, before.state, 'comparing investments must not commit a month');
@@ -300,18 +439,27 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
       ['finance', 'cost-ledger', 'data-cost-ledger'],
       ['markets', 'market-position', 'data-market-position'],
       ['operations', 'investment-lab', 'data-investment-lab'],
+      ['finance', 'financing-guide', 'data-financing-guide'],
+      ['finance', 'board-review', 'data-board-dashboard'],
     ]) {
       click(`[data-tab="${tab}"]`);
       click(`[data-action="${action}"]`);
       assert.ok($(`#modal-content [${marker}]`), `${action} should still explain an invalid working plan`);
       assert.match($('#modal-content').textContent, /must be between|correct|invalid|unavailable/i);
       assert.ok($$('[data-investment-apply]').every(button => button.disabled), 'an invalid baseline cannot produce actionable investment comparisons');
-      assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+      assert.doesNotMatch($('#modal-content').textContent, action === 'board-review' ? /NaN|Infinity/ : /NaN|Infinity|undefined/);
       assert.deepEqual(saved().state, validSave.state);
       assert.deepEqual(saved().plan, validSave.plan);
       click('[data-action="close-modal"]');
     }
     click('[data-tab="plan"]');
+    click('[data-plan-group="Investment"]');
+    click('[data-action="investment-guide"]');
+    assert.match($('#modal-content').textContent, /must be between|correct|invalid|unavailable/i);
+    assert.deepEqual(saved().state, validSave.state);
+    assert.deepEqual(saved().plan, validSave.plan);
+    click('[data-action="close-modal"]');
+    click('[data-plan-group="Commercial"]');
     edit('#field-tractorPrice', 160);
   });
 
@@ -370,7 +518,7 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     const expected = advanceMonth(before.state, before.plan);
     const projection = forecast(before.state, before.plan);
     click('[data-action="commit-preview"]');
-    assert.match($('#modal-content').textContent, /Commit your January plan/);
+    assert.match($('#modal-content').textContent, /Commit your January.*plan/);
     assert.equal(saved().state.month, 0, 'opening the commitment dialog must not advance time');
     click('[data-action="commit"]');
     click('#advance-button'); // A second click while the first commit resolves must be ignored.
@@ -381,7 +529,7 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.deepEqual(report.plan, before.plan);
     assert.deepEqual(report.planningForecast, projection.report.metrics);
     assert.match($('#round-badge').textContent, /ROUND 02/);
-    assert.match($('#modal-content').textContent, /January, in perspective/);
+    assert.match($('#modal-content').textContent, /January.*in perspective/);
     const rows = $$('#modal-content [data-report-production] tbody tr');
     assert.equal(rows.length, 3);
     for (const [index, product] of report.products.entries()) {
@@ -391,6 +539,28 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
       assert.equal(rows[index].children[4].textContent, units(product.retailSales));
     }
     assert.ok(report.products.some((product) => product.production > 0 && product.deliveries > 0));
+    assert.ok($('[data-board-summary]'), 'every completed month should include a board response');
+    verifyMonthlyBalanceSheet(saved().state, 1);
+  });
+
+  await t.test('the monthly board response matches actual results against the announced targets separately from coaching', () => {
+    const before = saved();
+    januaryBoardReview = getBoardReview(before.state, 1);
+    const summary = $('[data-board-summary="1"]');
+    verifyBoardReview(januaryBoardReview, summary);
+    assert.ok($('[data-kpi="coaching-score"]'), 'decision coaching remains separately labeled alongside actual board performance');
+    click('[data-board-month="1"]');
+    assert.ok($('[data-board-dashboard]'));
+    verifyBoardReview(januaryBoardReview, $('#modal-content'));
+    const next = getBoardDashboard(before.state, before.plan).next;
+    verifyBoardReview(next, $('#modal-content'));
+    assert.match($('#modal-content').textContent, /75\/100|target earns 75/);
+    assert.match($('#modal-content').textContent, /stretch/i);
+    assert.deepEqual(saved().state, before.state);
+    assert.deepEqual(saved().plan, before.plan);
+    click('[data-action="close-modal"]');
+    click('[data-tab="reports"]');
+    click('[data-action="last-report"]');
   });
 
   await t.test('a completed month provides a decision grade, coaching, and clearly scoped alternative plans', async () => {
@@ -516,7 +686,7 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     }
     click('[data-tab="reports"]');
     click('[data-action="last-report"]');
-    assert.match($('#modal-content').textContent, /January, in perspective/);
+    assert.match($('#modal-content').textContent, /January.*in perspective/);
     assert.equal($$('#modal-content [data-report-production] tbody tr').length, 3);
   });
 
@@ -530,7 +700,7 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     const before = saved();
     click('[data-tab="reports"]');
     click('[data-report="1"]');
-    assert.match($('#modal-content').textContent, /January, in perspective/);
+    assert.match($('#modal-content').textContent, /January.*in perspective/);
     click('[data-coaching-month="1"]');
     assert.equal($('#modal-content').textContent, januaryLesson, 'January coaching must not acquire future results or current-plan edits');
     assert.deepEqual(saved().state, before.state);
@@ -553,6 +723,25 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.match($('#modal-content').textContent, /forecast|expected|projected/i);
     assert.deepEqual(saved().state, before.state);
     assert.deepEqual(saved().plan, before.plan);
+  });
+
+  await t.test('historical board reviews and balance sheets stay attached to their original month', () => {
+    click('[data-action="close-modal"]');
+    const before = saved();
+    click('[data-tab="finance"]');
+    click('[data-action="board-review"]');
+    verifyBoardReview(getBoardReview(before.state, 2), $('#modal-content'));
+    click('[data-board-month="1"]');
+    assert.equal($('[data-board-month="1"]').getAttribute('aria-pressed'), 'true');
+    verifyBoardReview(januaryBoardReview, $('#modal-content'));
+    assert.equal($$('[data-board-kind="forecast"]').length, 0, 'a historical review must not mix in the current next-month plan');
+    assert.deepEqual(saved().state, before.state);
+    assert.deepEqual(saved().plan, before.plan);
+    click('[data-action="close-modal"]');
+    click('[data-tab="reports"]');
+    click('[data-report="1"]');
+    verifyMonthlyBalanceSheet(before.state, 1);
+    verifyBoardReview(januaryBoardReview, $('[data-board-summary="1"]'));
   });
 
   await t.test('completed and distressed campaigns retain financial visibility without inventing another round', async () => {
@@ -615,6 +804,9 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     click('[data-action="restart"]');
     const before = saved();
     assert.ok($('#new-market-regime'));
+    assert.ok($('#new-campaign-length'));
+    assert.deepEqual(new Set([...$('#new-campaign-length').options].map(option => option.value)), new Set(['12', '36']));
+    assert.equal($('#new-campaign-length').value, '36', 'a fresh mandate should default to three years');
     assert.deepEqual(new Set([...$('#new-market-regime').options].map(option => option.value)), new Set(['random', 'soft', 'flat', 'upswing', 'legacy']));
     const originalSeed = $('#new-seed').value;
     click('[data-action="randomize-seed"]');
@@ -634,6 +826,8 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     const soft = saved();
     assert.equal(soft.state.seed, 98765);
     assert.equal(soft.state.month, 0);
+    assert.equal(soft.state.campaignMonths, 36);
+    assert.equal(soft.state.version, '1.2.0');
     assert.equal(soft.state.marketCycle.initialRegime, 'soft');
     assert.equal(soft.state.history.length, 0);
     click('[data-tab="markets"]');
@@ -643,6 +837,7 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     click('[data-action="repeat-scenario"]');
     assert.equal(Number($('#new-seed').value), soft.state.seed);
     assert.equal($('#new-market-regime').value, 'soft');
+    assert.equal($('#new-campaign-length').value, '36', 'repeat-scenario must preserve the campaign horizon');
     click('[data-action="confirm-restart"]');
     assert.deepEqual(saved().state, soft.state, 'replaying a scenario should reproduce the same opening state');
     click('[data-action="settings"]');
@@ -652,5 +847,90 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     click('[data-action="confirm-restart"]');
     assert.equal(saved().state.marketCycle.initialRegime, 'upswing');
     assert.notDeepEqual(getMarketIntelligence(saved().state, saved().plan).timeline, getMarketIntelligence(soft.state, soft.plan).timeline, 'market forecasts must reflect the selected cycle');
+  });
+
+  await t.test('classic and one-year campaign selections preserve their original horizons', () => {
+    click('[data-action="settings"]');
+    click('[data-action="restart"]');
+    edit('#new-seed', 4821);
+    edit('#new-market-regime', 'legacy');
+    click('[data-action="confirm-restart"]');
+    assert.equal(dialog.open, false);
+    assert.equal(saved().state.version, '1.0.0');
+    assert.equal(saved().state.campaignMonths ?? 12, 12);
+    click('[data-action="settings"]');
+    click('[data-action="restart"]');
+    click('[data-action="repeat-scenario"]');
+    assert.equal($('#new-campaign-length').value, '12');
+    assert.equal($('#new-market-regime').value, 'legacy');
+    edit('#new-market-regime', 'flat');
+    edit('#new-campaign-length', '12');
+    click('[data-action="confirm-restart"]');
+    assert.equal(saved().state.version, '1.1.0');
+    assert.equal(saved().state.campaignMonths ?? 12, 12);
+    const annualOpening = saved().state;
+    click('[data-action="settings"]');
+    click('[data-action="restart"]');
+    click('[data-action="repeat-scenario"]');
+    assert.equal($('#new-campaign-length').value, '12');
+    click('[data-action="confirm-restart"]');
+    assert.deepEqual(saved().state, annualOpening);
+  });
+
+  await t.test('three-year saves continue beyond December and complete only after month 36', async () => {
+    let company = createInitialState(4821, { marketRegime: 'flat', campaignMonths: 36 });
+    while (company.month < 12 && company.status === 'active') company = advanceMonth(company, sustainablePlan(company)).state;
+    assert.equal(company.status, 'active');
+    assert.equal(company.month, 12);
+    await restoreCampaign(company, sustainablePlan(company));
+    assert.match($('#round-badge').textContent, /13/);
+    assert.match($('#round-badge').textContent, /JAN.*YEAR 2/);
+    click('[data-tab="finance"]');
+    click('[data-action="board-review"]');
+    const quarterEnd = getBoardReview(company, 12);
+    const actualReviews = $$('#modal-content [data-board-review="12"][data-board-kind="actual"]');
+    assert.equal(actualReviews.length, 2, 'a quarter-end review should show monthly results and the whole-quarter checkpoint');
+    verifyBoardReview(quarterEnd, actualReviews[0]);
+    verifyBoardReview(quarterEnd.quarterReview, actualReviews[1]);
+    assert.match(actualReviews[1].textContent, /Q4.*Year 1/);
+    click('[data-action="close-modal"]');
+    click('[data-tab="plan"]');
+    const expectedThirteen = advanceMonth(company, saved().plan);
+    click('[data-action="commit-preview"]');
+    assert.match($('#modal-content').textContent, /January/);
+    assert.match($('#modal-content').textContent, /Year 2/);
+    click('[data-action="commit"]');
+    await waitFor(() => saved().state.month === 13 && !document.body.classList.contains('resolving'), 'first month of year two did not finish');
+    assert.equal(saved().state.status, 'active');
+    assert.deepEqual(saved().state.history.at(-1).metrics, expectedThirteen.report.metrics);
+    assert.match($('#modal-content').textContent, /January.*Year 2|Year 2.*January/);
+    assert.ok($('[data-board-summary]'));
+    click('[data-action="close-modal"]');
+
+    company = saved().state;
+    while (company.month < 35 && company.status === 'active') company = advanceMonth(company, sustainablePlan(company)).state;
+    assert.equal(company.month, 35);
+    assert.equal(company.status, 'active');
+    await restoreCampaign(company, sustainablePlan(company));
+    assert.match($('#round-badge').textContent, /36/);
+    assert.match($('#round-badge').textContent, /DEC.*YEAR 3/);
+    click('[data-tab="plan"]');
+    const expectedFinal = advanceMonth(company, saved().plan);
+    click('[data-action="commit-preview"]');
+    click('[data-action="commit"]');
+    await waitFor(() => saved().state.month === 36 && !document.body.classList.contains('resolving'), 'final month did not finish');
+    assert.equal(saved().state.status, 'completed');
+    assert.deepEqual(saved().state.history.at(-1).metrics, expectedFinal.report.metrics);
+    assert.match($('#modal-content').textContent, /December.*Year 3|Year 3.*December/);
+    assert.ok($('[data-board-summary]'));
+    verifyMonthlyBalanceSheet(saved().state, 36);
+    click('[data-action="close-modal"]');
+    click('[data-tab="finance"]');
+    click('[data-action="financial-plan"]');
+    assert.equal(balanceValue('cash', 2), '—');
+    assert.match($('#modal-content').textContent, /Campaign ended/);
+    assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+    assert.deepEqual(saved().state.history.map(report => report.month), Array.from({ length: 36 }, (_, index) => index + 1));
+    click('[data-action="close-modal"]');
   });
 });

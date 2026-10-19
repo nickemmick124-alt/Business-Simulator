@@ -1,6 +1,7 @@
 import { getFactoryDiagnostics, getCostLedger } from './factory-diagnostics.js';
 import { getMarketPosition } from './market-position.js';
 import { getInvestmentOptions } from './investments.js';
+import { campaignLength, monthLabel } from './campaign-calendar.js';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const finite = value => typeof value === 'number' && Number.isFinite(value);
@@ -23,8 +24,8 @@ const deltaMoney = value => finite(value) ? sign(value) + '$' + effectAmount(val
 const deltaUnits = value => finite(value) ? sign(value) + units(Math.abs(value)) : '—';
 const deltaIndex = value => finite(value) ? sign(value) + effectAmount(value, 3) : '—';
 const effectPoints = value => finite(value) ? sign(value) + effectAmount(value * 100) + ' pp' : '—';
-const month = value => value > 12 ? 'Month ' + value + ' (after this campaign)' : ['Opening','January','February','March','April','May','June','July','August','September','October','November','December'][value] || '—';
-const shortMonth = value => month(value).slice(0, 3);
+const month = value => monthLabel(value);
+const shortMonth = value => monthLabel(value, { short: true });
 const button = (action, label) => '<button class="secondary-button" data-action="' + action + '">' + label + ' ↗</button>';
 const note = (title, text) => '<div class="business-note"><strong>' + escape(title) + '</strong><p>' + escape(text) + '</p></div>';
 const details = (title, items) => '<details class="business-details"><summary>' + escape(title) + '</summary>' + items.map(item => '<p>' + escape(item) + '</p>').join('') + '</details>';
@@ -96,14 +97,17 @@ function shareChart(history, next) {
   if (!history.length && !next) return '';
   const pointsData = [...history.map(row => ({month:row.month,value:row.unitShare})),...(next ? [{month:next.month,value:next.expectedUnitShare,forecast:true}] : [])];
   const ceiling = Math.max(.05,...pointsData.map(p => p.value)) * 1.15;
-  const x = p => 40 + (p.month - 1) * 50;
+  const firstMonth = pointsData[0].month;
+  const span = Math.max(11, pointsData.at(-1).month - firstMonth);
+  const tickStride = Math.max(1, Math.ceil(pointsData.length / 10));
+  const x = p => 40 + (p.month - firstMonth) / span * 550;
   const y = p => 145 - p.value / ceiling * 110;
   const actual = pointsData.filter(p => !p.forecast);
   const expected = pointsData.at(-1)?.forecast ? pointsData.at(-1) : null;
   return '<figure class="business-chart share-chart"><figcaption>Your share of the scenario market<span>Customer retail units / modeled industry units · outlined point = forecast</span></figcaption><svg viewBox="0 0 635 185" role="img" aria-label="Monthly retail unit share; exact values in the table below."><line class="chart-baseline" x1="30" x2="610" y1="145" y2="145"/>' +
     (actual.length > 1 ? '<polyline class="share-actual-line" points="' + actual.map(p => x(p)+','+y(p)).join(' ') + '"/>' : '') +
     (expected && actual.length ? '<line class="chart-line" x1="' + x(actual.at(-1)) + '" y1="' + y(actual.at(-1)) + '" x2="' + x(expected) + '" y2="' + y(expected) + '"/>' : '') +
-    pointsData.map(p => '<circle class="' + (p.forecast ? 'chart-forecast' : 'chart-actual') + '" cx="' + x(p) + '" cy="' + y(p) + '" r="4"><title>' + month(p.month) + (p.forecast ? ' forecast ' : ' actual ') + percent(p.value) + '</title></circle><text text-anchor="middle" x="' + x(p) + '" y="166">' + shortMonth(p.month) + '</text><text text-anchor="middle" x="' + x(p) + '" y="' + (y(p)-12) + '">' + percent(p.value) + '</text>').join('') + '</svg></figure>';
+    pointsData.map((p,i) => '<circle class="' + (p.forecast ? 'chart-forecast' : 'chart-actual') + '" cx="' + x(p) + '" cy="' + y(p) + '" r="4"><title>' + month(p.month) + (p.forecast ? ' forecast ' : ' actual ') + percent(p.value) + '</title></circle>' + (i % tickStride === 0 || i === pointsData.length - 1 ? '<text text-anchor="middle" x="' + x(p) + '" y="166">' + shortMonth(p.month) + '</text><text text-anchor="middle" x="' + x(p) + '" y="' + (y(p)-12) + '">' + percent(p.value) + '</text>' : '')).join('') + '</svg></figure>';
 }
 
 export function marketPositionHTML(state, plan) {
@@ -148,7 +152,7 @@ function investmentCard(option, data) {
   const capability = {training:['Workforce skill','skill'],quality:['First-pass capability','qualityCapability'],maintenance:['Plant condition','condition'],capacity:['Capacity bonus','capacityBonus'],engineering:['Product technology','technology']}[option.id];
   const capabilityValue = capability[1] === 'qualityCapability' || capability[1] === 'capacityBonus' ? effectPoints(delta[capability[1]]) : deltaIndex(delta[capability[1]]);
   return '<article class="investment-card" data-investment-option="' + option.id + '"><span class="overline">' + (cost.type === 'one-time' ? 'ONE-TIME CAPITAL PROJECT' : 'RECURRING OPERATING BUDGET') + '</span><h3>' + escape(option.name) + '</h3><p>' + escape(option.purpose) + '</p><strong class="investment-spend">+' + money(cost.increment) + (cost.type === 'monthly' ? ' / month' : ' once') + '</strong><p>Budget moves from ' + money(cost.baselineBudget) + ' to ' + money(cost.proposedBudget) + '. Additional commitment over compared months: ' + money(cost.comparisonIncrement) + '.</p>' +
-    '<div class="investment-timing"><strong>Earliest capability effect: ' + escape(month(option.timing.firstBenefitMonth)) + '</strong><span>' + (option.timing.observedFirstCapabilityBenefitMonth ? 'First modeled improvement versus baseline: ' + month(option.timing.observedFirstCapabilityBenefitMonth) + '.' : 'No improvement in the primary capability is observed within this comparison.') + '</span></div>' +
+    '<div class="investment-timing"><strong>Earliest capability effect: ' + escape(month(option.timing.firstBenefitMonth) + (option.timing.withinCampaign ? '' : ' (after this campaign)')) + '</strong><span>' + (option.timing.observedFirstCapabilityBenefitMonth ? 'First modeled improvement versus baseline: ' + month(option.timing.observedFirstCapabilityBenefitMonth) + '.' : 'No improvement in the primary capability is observed within this comparison.') + '</span></div>' +
     '<dl class="economics-lines"><div><dt>Period net profit vs baseline</dt><dd>' + deltaMoney(delta.profit) + '</dd></div><div><dt>Ending cash vs baseline</dt><dd>' + deltaMoney(delta.endingCash) + '</dd></div><div><dt>Customer retail units vs baseline</dt><dd>' + deltaUnits(delta.retailSales) + '</dd></div><div><dt>Ending share vs baseline</dt><dd>' + effectPoints(delta.endingUnitShare) + '</dd></div><div><dt>' + capability[0] + ' vs baseline</dt><dd>' + capabilityValue + '</dd></div></dl>' +
     '<p>Lowest projected month-end cash: <strong>' + money(selected.minimumCash) + '</strong> in ' + month(selected.minimumCashMonth) + '. ' + (option.stopReason === 'distress' ? 'This policy reaches financial distress in ' + month(option.months.at(-1).month) + '.' : '') + '</p>' +
     option.warnings.map(warning => '<div class="business-alert"><p>' + escape(warning.detail) + '</p></div>').join('') +
@@ -162,12 +166,12 @@ export function investmentLabHTML(state, plan, horizon = 6, message = '') {
   try { data = getInvestmentOptions(state,plan,horizon); }
   catch (error) { return '<div data-investment-lab>' + alert(error.message + ' Update Decisions before comparing investments.') + '</div>'; }
   if (!data.available) return '<div data-investment-lab>' + note('Campaign ended',data.reason) + '<div class="operations-links">' + button('factory-diagnostics','Review the factory') + button('cost-ledger','Review costs & inventory') + '</div></div>';
-  return '<div data-investment-lab><div class="business-toolbar"><div><p class="business-intro">Which investment addresses your constraint?</p><p class="business-caption">Five targeted experiments against the current working plan. Forecasts use the same public outlook.</p></div><div class="tab-strip" role="group" aria-label="Investment comparison horizon">' + [[3,'3 months'],[6,'6 months'],['year-end','To year-end']].map(([value,label]) => '<button data-investment-horizon="' + value + '" class="' + (horizon === value ? 'active' : '') + '" aria-pressed="' + (horizon === value) + '">' + label + '</button>').join('') + '</div></div>' +
+  return '<div data-investment-lab><div class="business-toolbar"><div><p class="business-intro">Which investment addresses your constraint?</p><p class="business-caption">Five targeted experiments against the current working plan. Forecasts use the same public outlook.</p></div><div class="tab-strip" role="group" aria-label="Investment comparison horizon">' + [[3,'3 months'],[6,'6 months'],['year-end','To year-end'],...(campaignLength(state)>12 ? [['campaign-end','To campaign end']] : [])].map(([value,label]) => '<button data-investment-horizon="' + value + '" class="' + (horizon === value ? 'active' : '') + '" aria-pressed="' + (horizon === value) + '">' + label + '</button>').join('') + '</div></div>' +
     (message ? '<div class="business-note" role="status"><strong>' + escape(message) + '</strong><p>The updated working plan is now the reference case. The month has not advanced.</p></div>' : '') +
     (data.truncated ? '<div class="business-alert"><strong>Comparison shortened by financial distress</strong><p>' + escape(data.comparisonNote) + '</p></div>' : '<p class="business-caption">' + escape(data.comparisonNote) + '</p>') +
     data.warnings.map(warning => '<div class="business-alert"><strong>Projected funding risk</strong><p>' + escape(warning.detail) + '</p></div>').join('') +
     note('Better capability does not automatically create better profit','An investment can cost cash now and improve future readiness without generating extra sales in this horizon. Targets, materials, demand and dealer inventory may remain the constraint. Compare a longer horizon and then adjust the whole operating plan. No payback or optimal investment is assumed.') +
     '<div class="operations-links">' + button('factory-diagnostics','Inspect factory constraints') + button('market-position','Inspect market position') + '</div><div class="investment-grid">' + data.options.map(option => investmentCard(option,{...data,openingCash:state.cash})).join('') + '</div>' +
-    (data.pipeline.length ? '<details class="business-details"><summary>Already-funded projects included in every option</summary>' + table(['Project','Amount','Scheduled completion'],data.pipeline.map(project => [escape(project.name),money(project.amount),escape(month(project.firstBenefitMonth))])) + '</details>' : '') +
+    (data.pipeline.length ? '<details class="business-details"><summary>Already-funded projects included in every option</summary>' + table(['Project','Amount','Scheduled completion'],data.pipeline.map(project => [escape(project.name),money(project.amount),escape(month(project.firstBenefitMonth) + (project.withinCampaign ? '' : ' (after this campaign)'))])) + '</details>' : '') +
     details('Comparison assumptions',data.assumptions) + '<p class="business-caption">Displayed values are rounded. Small effects may round to zero; adding displayed amounts can differ from a rounded total.</p></div>';
 }

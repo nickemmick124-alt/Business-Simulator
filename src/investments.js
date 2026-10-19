@@ -5,11 +5,12 @@
  */
 import { PRODUCTS, PLAN_FIELDS, balanceSheet, forecast, validatePlan, validateState } from './simulation.js';
 import { getMarketIntelligence } from './business-intelligence.js';
+import { campaignLength, campaignYearEnd } from './campaign-calendar.js';
 
 const sum = values => values.reduce((total, value) => total + value, 0);
 const mean = values => sum(values) / values.length;
 const money = value => Math.round((value + Number.EPSILON) * 1e9) / 1e9;
-const active = state => state.status === 'active' && state.month < 12;
+const active = state => state.status === 'active' && state.month < campaignLength(state);
 const DEFINITIONS = Object.freeze([
   { id: 'baseline', name: 'Keep the working plan', lever: null, increment: 0, lag: 0,
     purpose: 'Reference case with your current prices, production targets and budgets.',
@@ -101,7 +102,7 @@ function pipeline(state, endMonth) {
   ].map(project => ({
     ...project,
     firstBenefitMonth: state.month + project.remaining,
-    withinCampaign: state.month + project.remaining <= 12,
+    withinCampaign: state.month + project.remaining <= campaignLength(state),
     withinRequestedHorizon: state.month + project.remaining <= endMonth,
   })).sort((a, b) => a.firstBenefitMonth - b.firstBenefitMonth);
 }
@@ -114,9 +115,9 @@ function pipeline(state, endMonth) {
 export function getInvestmentOptions(state, inputPlan, horizon = 6) {
   const stateCheck = validateState(state);
   if (!stateCheck.valid) throw new Error(`Invalid simulation state: ${stateCheck.errors.join(' ')}`);
-  const availableMonths = Math.max(0, 12 - state.month);
-  const requested = horizon === 'year-end' ? Math.max(1, availableMonths) : horizon;
-  if (!Number.isInteger(requested) || requested < 1 || requested > 12) throw new Error('Investment horizon must be a whole number of months from 1 to 12, or year-end.');
+  const availableMonths = Math.max(0, campaignLength(state) - state.month);
+  const requested = horizon === 'year-end' ? Math.max(1, campaignYearEnd(state) - state.month) : horizon === 'campaign-end' ? Math.max(1, availableMonths) : horizon;
+  if (!Number.isInteger(requested) || requested < 1 || requested > campaignLength(state)) throw new Error(`Investment horizon must be a whole number of months from 1 to ${campaignLength(state)}, year-end, or campaign-end.`);
   const count = Math.min(requested, availableMonths);
   const result = {
     available: active(state), reason: active(state) ? null : 'The campaign has ended; investment decisions are closed.',
@@ -167,12 +168,12 @@ export function getInvestmentOptions(state, inputPlan, horizon = 6) {
         firstBenefitMonth: field && enabled ? state.month + 1 + definition.lag : null,
         observedFirstCapabilityBenefitMonth: null,
         benefitWithinComparison: false,
-        withinCampaign: field && enabled ? state.month + 1 + definition.lag <= 12 : false,
+        withinCampaign: field && enabled ? state.month + 1 + definition.lag <= campaignLength(state) : false,
         detail: definition.benefit,
       },
       months, summary: summarize(months), comparison: null, warnings: [],
       stopReason: !enabled ? 'disabled' : months.at(-1)?.status === 'distressed' ? 'distress'
-        : months.at(-1)?.month === 12 ? 'year-end' : 'horizon',
+        : months.at(-1)?.month === campaignLength(state) ? (campaignLength(state) === 12 ? 'year-end' : 'campaign-end') : 'horizon',
     });
   }
   const enabled = result.options.filter(option => option.enabled);
@@ -188,7 +189,7 @@ export function getInvestmentOptions(state, inputPlan, horizon = 6) {
   });
   result.comparisonNote = result.truncated
     ? `All differences compare months ${state.month + 1}–${state.month + common}. ${distressed.map(option => `${option.name} reaches distress in month ${option.months.at(-1).month}`).join('; ')}. The ${count}-month requested comparison is shortened; later results are not comparable.`
-    : `All differences compare the same ${common} months, ${state.month + 1}–${state.month + common}${count < requested ? ', stopping at campaign year-end' : ''}.`;
+    : `All differences compare the same ${common} months, ${state.month + 1}–${state.month + common}${count < requested ? (campaignLength(state) === 12 ? ', stopping at campaign year-end' : ', stopping at campaign end') : ''}.`;
   const baselineSummary = summarize(baseline.months.slice(0, common));
   for (const option of enabled) {
     const selected = summarize(option.months.slice(0, common));

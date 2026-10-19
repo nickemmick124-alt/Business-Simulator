@@ -3,7 +3,8 @@
  * Currency is USD millions unless named referencePrice ($000); ratios are fractions.
  * This layer does not alter simulation mechanics, save data, or the model version.
  */
-import { PRODUCTS, CYCLICAL_MODEL_VERSION, balanceSheet, forecast, getMarketOutlook, validatePlan, validateState } from './simulation.js';
+import { PRODUCTS, balanceSheet, forecast, getMarketOutlook, validatePlan, validateState } from './simulation.js';
+import { campaignLength, campaignYear, campaignYearEnd, isCyclicalState } from './campaign-calendar.js';
 
 const BASELINE_UNIT_SHARES = Object.freeze({ tractor: 0.20, harvester: 0.18, loader: 0.16 });
 const CORPORATE_CREDIT_LIMIT = 160;
@@ -11,7 +12,7 @@ const CASH_WATCH_LEVEL = 20;
 const sum = values => values.reduce((total, value) => total + value, 0);
 const money = value => Math.round((value + Number.EPSILON) * 1e9) / 1e9;
 const change = (next, prior) => prior > 0 ? (next - prior) / prior : null;
-const active = state => state.status === 'active' && state.month < 12;
+const active = state => state.status === 'active' && state.month < campaignLength(state);
 const reportDemand = report => sum(report.products.map(product => product.demand));
 const expectedDemand = report => sum(report.products.map(product => product.expectedDemand));
 
@@ -29,7 +30,7 @@ function checkPlan(state, plan) {
 /** Public scenario/observed denominator. Player decisions affect the numerator. */
 function marketTimeline(state) {
   const timeline = [];
-  for (let month = 1; month <= 12; month += 1) {
+  for (let month = 1; month <= campaignLength(state); month += 1) {
     const outlook = getMarketOutlook({ ...state, month: month - 1 });
     const products = PRODUCTS.map(product => {
       const season = product.segment === 'Agriculture' ? outlook.agriculture : outlook.construction;
@@ -71,7 +72,8 @@ function nextShare(report, market, prior) {
 }
 
 /**
- * Returns a 12-month modeled addressable market and observed/expected unit shares.
+ * Returns the current/upcoming year’s modeled addressable market and a full-campaign timeline.
+ * Observed and expected unit shares always use the month-specific denominator.
  * No observed share is invented before the first committed month. Invalid active
  * plans throw; omitting a plan returns public market context with null company
  * projections. A terminal campaign still returns market context with next=null.
@@ -79,13 +81,17 @@ function nextShare(report, market, prior) {
 export function getMarketIntelligence(state, plan) {
   checkState(state);
   const timeline = marketTimeline(state);
-  const cyclical = state.version === CYCLICAL_MODEL_VERSION;
+  const cyclical = isCyclicalState(state);
   const last = state.history.at(-1) ?? null;
   const nextReport = active(state) && plan != null ? forecast(state, checkPlan(state, plan)).report : null;
   const upcomingMarket = active(state) ? timeline[state.month] : null;
+  const endMonth = campaignYearEnd(state);
+  const startMonth = endMonth - 11;
+  const annualTimeline = timeline.filter(month => month.month >= startMonth && month.month <= endMonth);
   const annual = {
-    units: sum(timeline.map(month => month.units)),
-    value: money(sum(timeline.map(month => month.value))),
+    year: campaignYear(endMonth), startMonth, endMonth,
+    units: sum(annualTimeline.map(month => month.units)),
+    value: money(sum(annualTimeline.map(month => month.value))),
   };
   return {
     scope: 'Modeled addressable market for three equipment families in this campaign; not the global equipment market or reported CNH market share.',
@@ -100,7 +106,7 @@ export function getMarketIntelligence(state, plan) {
     current: last ? actualShare(last, timeline[last.month - 1]) : null,
     next: upcomingMarket ? nextShare(nextReport, upcomingMarket, last) : null,
     products: PRODUCTS.map(product => {
-      const annualUnits = sum(timeline.map(month => month.products.find(item => item.id === product.id).units));
+      const annualUnits = sum(annualTimeline.map(month => month.products.find(item => item.id === product.id).units));
       const currentProduct = last?.products.find(item => item.id === product.id);
       const currentMarket = last ? timeline[last.month - 1].products.find(item => item.id === product.id) : null;
       const nextProduct = nextReport?.products.find(item => item.id === product.id);
@@ -186,21 +192,21 @@ function projectionWarnings(current, months) {
 }
 
 /**
- * Sequential mean-outcome planning, stopping at requested horizon, distress, or M12.
+ * Sequential mean-outcome planning, stopping at requested horizon, distress, or campaign end.
  * The current policy repeats, except borrowing/repayment and capex are one-time.
  * This function never advances or modifies the live state or its saved history.
  */
 export function projectBusiness(state, plan, horizon = 3) {
   checkState(state);
-  if (!Number.isInteger(horizon) || horizon < 1 || horizon > 12) throw new Error('Projection horizon must be a whole number of months between 1 and 12.');
+  if (!Number.isInteger(horizon) || horizon < 1 || horizon > campaignLength(state)) throw new Error(`Projection horizon must be a whole number of months between 1 and ${campaignLength(state)}.`);
   const current = position(state);
   const result = {
-    horizonRequested: horizon, horizonAvailable: Math.max(0, 12 - state.month),
+    horizonRequested: horizon, horizonAvailable: Math.max(0, campaignLength(state) - state.month),
     assumptions: [
       'Expected scenario using public demand and average operating outcomes; this is not a guarantee or a probability range.',
       'Current prices, production targets, recurring budgets, overtime, component buffer, and customer APR repeat each month.',
       'Corporate borrowing or repayment and capital expenditure apply in the first projected month only, then reset to zero.',
-      'Each month carries forward inventory, dealer stock, receivables, payables, loans, capabilities, and investment lead times. Projection stops at financial distress or month 12.',
+      `Each month carries forward inventory, dealer stock, receivables, payables, loans, capabilities, and investment lead times. Projection stops at financial distress or campaign month ${campaignLength(state)}.`,
       'All figures are synthetic USD millions. Operating working capital is receivables plus factory inventory less payables; net debt includes corporate and customer-finance debt, less cash.',
     ],
     current, months: [], ending: { ...current }, stopReason: null, warnings: [],
@@ -235,7 +241,7 @@ export function projectBusiness(state, plan, horizon = 3) {
     projectedState = nextState;
     priorReport = report;
     if (nextState.status === 'distressed') { result.stopReason = 'distress'; break; }
-    if (nextState.month === 12) { result.stopReason = 'year-end'; break; }
+    if (nextState.month === campaignLength(state)) { result.stopReason = campaignLength(state) === 12 ? 'year-end' : 'campaign-end'; break; }
   }
   result.warnings = projectionWarnings(current, result.months);
   return result;

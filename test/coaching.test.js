@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PRODUCTS, PLAN_FIELDS, createInitialState, defaultPlan, advanceMonth, forecast, validatePlan, validateState } from '../src/simulation.js';
-import { getMonthlyCoaching, getPlanCoaching } from '../src/coaching.js';
+import { COACHING_METHODOLOGY_VERSION, getMonthlyCoaching, getPlanCoaching } from '../src/coaching.js';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const completeMonth = (state, plan = defaultPlan(state)) => advanceMonth(state, plan).state;
@@ -150,4 +150,89 @@ test('visible grade components reconcile and lessons state the limited compariso
   assert.match(coaching.methodology, /not a global optimum/);
   assert.equal(coaching.actualVsForecast.variance.profit, coaching.actualVsForecast.actual.profit - coaching.actualVsForecast.forecast.profit);
   assert.deepEqual(coaching.planChanges, coaching.hindsightBest.planChanges);
+});
+
+test('being the best tested choice cannot turn weak operating standards into an A', () => {
+  const opening = createInitialState(4821);
+  const coaching = getPlanCoaching(opening, defaultPlan(opening));
+  // All nine policies face an initial dealer-stock correction and forecast an
+  // operating loss. Relative ranking is useful but cannot erase those losses.
+  assert.ok(coaching.alternatives.every(option => option.forecast.operatingProfit < 0));
+  assert.ok(coaching.forecastBest.score < 80);
+  for (const option of coaching.alternatives) {
+    for (const component of option.components) {
+      assert.ok(component.score <= component.absoluteScore / 100 * component.maximum + 0.011);
+      assert.ok(component.opportunityPenalty >= 0);
+      assert.ok(component.opportunityPenalty <= component.absoluteScore / 100 * component.maximum / 4 + 0.011);
+    }
+    assert.ok(option.components.find(component => component.id === 'economics').score < 12.5,
+      'A forecast operating loss cannot earn half of earnings points.');
+  }
+  const strongComponent = coaching.alternatives.flatMap(option => option.components)
+    .find(component => component.absoluteScore === component.benchmarkScore && component.absoluteScore < 80);
+  assert.ok(strongComponent, 'Fixture includes a best-in-set dimension with weak absolute standards.');
+  assert.ok(strongComponent.score < strongComponent.maximum * 0.8);
+});
+
+test('neglect, standing output, demand discipline and profitable improvement earn meaningfully distinct grades', () => {
+  const initial = createInitialState(4821);
+  const neglected = { ...defaultPlan(initial), marketing: 0, quality: 0, maintenance: 0, training: 0, rd: 0,
+    tractorProduction: 0, harvesterProduction: 0, loaderProduction: 0 };
+  const failure = getPlanCoaching(initial, neglected);
+  const standing = getPlanCoaching(initial, defaultPlan(initial));
+  const matchedPlan = standing.alternatives.find(option => option.id === 'match-demand').plan;
+  const disciplined = getPlanCoaching(initial, matchedPlan);
+  assert.equal(failure.grade, 'F');
+  assert.equal(standing.grade, 'D');
+  assert.equal(disciplined.grade, 'C');
+  assert.ok(disciplined.alternatives[0].forecast.inventoryValue < standing.alternatives[0].forecast.inventoryValue);
+  assert.ok(disciplined.score - standing.score >= 8);
+
+  let state = initial;
+  const disciplinedCampaign = [];
+  while (state.status === 'active') {
+    const choices = getPlanCoaching(state, defaultPlan(state));
+    const plan = choices.alternatives.find(option => option.id === 'match-demand').plan;
+    const review = getPlanCoaching(state, plan);
+    disciplinedCampaign.push(review);
+    state = advanceMonth(state, plan).state;
+  }
+  assert.ok(disciplinedCampaign.some(review => review.grade === 'B'));
+  assert.ok(disciplinedCampaign.some(review => review.grade === 'A'));
+  assert.ok(Math.max(...disciplinedCampaign.map(review => review.score))
+    - Math.min(...disciplinedCampaign.map(review => review.score)) >= 15);
+  assert.ok(disciplinedCampaign.filter(review => review.grade === 'A')
+    .every(review => review.alternatives[0].forecast.operatingProfit > 0));
+});
+
+test('historical grades disclose the current rubric without modifying saved financial results', () => {
+  const state = completeMonth(createInitialState(17, { marketRegime: 'soft' }));
+  const before = JSON.stringify(state);
+  const review = getMonthlyCoaching(state);
+  assert.equal(review.methodologyVersion, COACHING_METHODOLOGY_VERSION);
+  assert.equal(getPlanCoaching(createInitialState(), defaultPlan(createInitialState())).methodologyVersion, COACHING_METHODOLOGY_VERSION);
+  assert.match(review.methodology, /Historical decision grades are recalculated/);
+  assert.match(review.methodology, /board separately assesses realized performance/);
+  assert.equal(JSON.stringify(state), before);
+});
+
+test('three-year campaigns replay decisions across year boundaries without changing earlier reviews', () => {
+  let state = createInitialState(4821, { marketRegime: 'flat', campaignMonths: 36 });
+  let firstYearReview;
+  while (state.month < 25) {
+    assert.equal(state.status, 'active');
+    const choices = getPlanCoaching(state, defaultPlan(state));
+    state = completeMonth(state, choices.alternatives.find(option => option.id === 'match-demand').plan);
+    if (state.month === 12) firstYearReview = getMonthlyCoaching(state, 12);
+  }
+  const snapshot = JSON.stringify(state);
+  assert.deepEqual(getMonthlyCoaching(state, 12), firstYearReview);
+  for (const month of [13, 25]) {
+    const review = getMonthlyCoaching(state, month);
+    assert.equal(review.available, true, review.reason);
+    assert.equal(review.month, month);
+    assert.equal(review.alternatives[0].actual.profit, state.history[month - 1].metrics.profit);
+    assert.equal(review.alternatives.length, 9);
+  }
+  assert.equal(JSON.stringify(state), snapshot);
 });

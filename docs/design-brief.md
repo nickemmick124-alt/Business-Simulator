@@ -23,7 +23,7 @@ Useful decisions create connected tradeoffs. Higher output can consume cash whil
 
 ## Implemented campaign boundary
 
-The initial campaign is single-player and lasts up to twelve monthly rounds, with an earlier ending for financial distress. Its three representative product families are row-crop tractors, combine harvesters, and wheel loaders. Commercial, production, operational, investment, and finance controls connect these products to dealer orders, retail sales, material flow, quality, warranty, customer loans, and financial statements.
+The campaign is single-player, with a choice of twelve or thirty-six monthly rounds and an earlier ending for financial distress. New games default to three years; existing one-year saves keep their original duration. A public board mandate supplies monthly targets, quarterly milestones and outcome reviews, while decision coaching separately evaluates the choices available before each round. Its three representative product families are row-crop tractors, combine harvesters, and wheel loaders. Commercial, production, operational, investment, and finance controls connect these products to dealer orders, retail sales, material flow, quality, warranty, customer loans, and financial statements.
 
 Markets and dealers are aggregated. Competition influences demand through published market pressure and seeded variation; independent rival businesses and geographic markets are not simulated. Investment policies are shared across the product families. The accounting uses a simplified consolidated company and a single currency.
 

@@ -8,6 +8,7 @@ const clamp = (n, low, high) => Math.max(low, Math.min(high, n));
 const sum = values => values.reduce((a, b) => a + b, 0);
 const clone = value => JSON.parse(JSON.stringify(value));
 const round = n => Math.round(n * 100) / 100;
+export const COACHING_METHODOLOGY_VERSION = '2.0';
 const DEFINITIONS = [
   { id: 'economics', label: 'Earnings discipline', maximum: 25 },
   { id: 'workingCapital', label: 'Cash & inventory discipline', maximum: 20 },
@@ -78,7 +79,10 @@ function rawAssessment(opening, result) {
   // Operating earnings exclude corporate funding and its interest. A $1m
   // improvement has the same effect for every plan facing this opening position.
   const revenueScale = Math.max(20, sum(PRODUCTS.map(product => product.baseDemand * product.basePrice * 0.86 / 1000)));
-  const economics = clamp(65 + report.income.operatingProfit / revenueScale * 210, 0, 100);
+  // Break-even is the midpoint, not a passing earnings grade. Five points of
+  // operating return on the fixed revenue scale earn 65; ten earn 80. A weak
+  // opportunity set cannot turn a loss into excellent earnings discipline.
+  const economics = clamp(50 + report.income.operatingProfit / revenueScale * 300, 0, 100);
   const inventoryCover = report.balanceSheet.inventory / Math.max(8, report.income.cogs);
   const changeInWorkingCapital = workingCapital(report.balanceSheet) - workingCapital(report.openingBalanceSheet);
   const inventoryDiscipline = clamp(100 - Math.max(0, inventoryCover - 0.65) * 45, 0, 100);
@@ -108,7 +112,7 @@ function rawAssessment(opening, result) {
     values: { economics, workingCapital: workingCapitalScore, service, capability, risk },
     facts: { operatingProfit: report.income.operatingProfit, revenue, inventoryCover, changeInWorkingCapital,
       inventory: report.balanceSheet.inventory, service, quality: report.metrics.qualityRate, stewardship,
-      cash: ending.cash, resources, status: ending.status },
+      revenueScale, cash: ending.cash, resources, status: ending.status },
   };
 }
 
@@ -116,8 +120,13 @@ function gradeAssessment(assessment, benchmarks) {
   const components = DEFINITIONS.map(definition => {
     const absolute = assessment.values[definition.id];
     const regret = Math.max(0, benchmarks[definition.id] - absolute);
-    const percentage = 0.35 * absolute + 0.65 * clamp(100 - 2 * regret, 0, 100);
-    return { ...definition, score: round(percentage / 100 * definition.maximum), absoluteScore: round(absolute), benchmarkScore: round(benchmarks[definition.id]) };
+    // Keep an operating-standard anchor even when every tested policy is poor.
+    // Comparison may reduce at most a quarter of the criterion score; being
+    // the least bad policy never awards a free 100% comparative component.
+    const comparisonAdjusted = clamp(absolute - 2 * regret, 0, 100);
+    const percentage = 0.75 * absolute + 0.25 * comparisonAdjusted;
+    return { ...definition, score: round(percentage / 100 * definition.maximum), absoluteScore: round(absolute),
+      benchmarkScore: round(benchmarks[definition.id]), opportunityPenalty: round((absolute - percentage) / 100 * definition.maximum) };
   });
   const score = Math.round(clamp(sum(components.map(component => component.score)), 0, 100));
   return { score, grade: letter(score), components };
@@ -153,7 +162,7 @@ export function getPlanCoaching(state, plan) {
   try {
     const assessment = assessPlans(state, plan);
     const chosen = assessment.alternatives[0];
-    return { available: true, month: state.month + 1, score: chosen.score, grade: chosen.grade,
+    return { available: true, methodologyVersion: COACHING_METHODOLOGY_VERSION, month: state.month + 1, score: chosen.score, grade: chosen.grade,
       components: chosen.components, alternatives: assessment.alternatives, forecastBest: assessment.forecastBest };
   } catch (error) { return unavailable(state.month + 1, error.message); }
 }
@@ -187,7 +196,7 @@ function replayOpening(state, month) {
 
 function explainComponents(components, facts) {
   const details = {
-    economics: `Expected operating profit is $${facts.operatingProfit.toFixed(1)}m. Borrowing does not increase earnings.`,
+    economics: `Expected operating profit is $${facts.operatingProfit.toFixed(1)}m, ${(facts.operatingProfit / facts.revenueScale * 100).toFixed(1)}% of the fixed $${facts.revenueScale.toFixed(1)}m reference revenue scale. Break-even earns 50% of earnings points; a 10% return earns 80%. Borrowing does not increase earnings.`,
     workingCapital: `Expected inventory is $${facts.inventory.toFixed(1)}m; operating working capital ${facts.changeInWorkingCapital >= 0 ? 'increases' : 'decreases'} by $${Math.abs(facts.changeInWorkingCapital).toFixed(1)}m.`,
     service: `Expected customer and dealer fulfillment is ${facts.service.toFixed(0)}% on the combined service measure.`,
     capability: `Expected first-pass quality is ${(facts.quality * 100).toFixed(1)}%; maintenance, training, quality support and engineering also protect the next period.`,
@@ -244,13 +253,13 @@ export function getMonthlyCoaching(state, month = state?.month) {
     const demandExpected = sum(assessed.candidates[0].result.report.products.map(product => product.demand));
     const demandChange = demandExpected ? (demandActual - demandExpected) / demandExpected : null;
     return {
-      available: true, month, score: selected.score, grade: selected.grade, components,
+      available: true, methodologyVersion: COACHING_METHODOLOGY_VERSION, month, score: selected.score, grade: selected.grade, components,
       ...teaching(explained, forecastBest, expectedFacts), alternatives, forecastBest, hindsightBest,
       planChanges: hindsightBest.planChanges,
       actualVsForecast: { forecast: expected, actual, variance, outcomeScore: selected.actualScore, outcomeGrade: selected.actualGrade },
       shockContext: { publicOutlook, events: clone(marketEvents), demandChange,
         summary: demandChange === null ? 'There was no expected demand to compare.' : `Customer demand was ${Math.abs(demandChange * 100).toFixed(1)}% ${demandChange >= 0 ? 'above' : 'below'} the public forecast. The decision grade was fixed before these outcomes were known.` },
-      methodology: 'Decision grade uses the public expected outcome, with five weighted dimensions. Each blends 35% absolute operating standards and 65% comparison with the strongest value of that dimension among nine feasible test policies. A ≥90; B ≥80; C ≥70; D ≥60; F <60. Actual outcomes are scored separately using the same benchmarks. Hindsight compares only these tested plans from the identical opening position and realized shocks; it is not a global optimum or a promise about later months.',
+      methodology: 'Decision-quality rubric 2.0 uses the public expected outcome, with five weighted operating standards. Each blends 75% of its criterion score with 25% of that same score reduced for avoidable shortfalls against nine feasible test policies. Comparison can only deduct points; equally weak alternatives do not create a high grade. Break-even earns half of earnings points. A ≥90; B ≥80; C ≥70; D ≥60; F <60. Actual outcomes are scored separately using the same benchmarks; the board separately assesses realized performance against its published goals. Historical decision grades are recalculated with this rubric without changing any saved result. Hindsight compares only these tested plans from the identical opening position and realized shocks; it is not a global optimum or a promise about later months.',
     };
   } catch (error) {
     return unavailable(month, `A trustworthy historical comparison is unavailable. ${error.message}`);

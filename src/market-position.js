@@ -1,3 +1,4 @@
+import { campaignLength } from './campaign-calendar.js';
 /**
  * Read-only market position and customer-perception diagnostics.
  * USD millions except list/reference prices ($000). Shares, rates, growth, and
@@ -138,7 +139,7 @@ export function getMarketPosition(state, plan) {
   // Omit the plan so invalid decisions never suppress already observed data.
   const market = getMarketIntelligence(state);
   const reports = state.history.filter(report => !report.isForecast && !report.forecast);
-  const active = state.status === 'active' && state.month < 12;
+  const active = state.status === 'active' && state.month < campaignLength(state);
   const publicOutlook = active ? getMarketOutlook(state) : null;
   let predicted = null;
   let forecastError = null;

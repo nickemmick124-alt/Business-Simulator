@@ -98,7 +98,7 @@ The first constraint is a displayed diagnostic priority, not a proven economical
 | Factory capex | Each $1m completed adds 0.4 percentage points to shared capacity bonus, capped at 40% | Cash and fixed assets now; capacity after three further rounds; depreciation over time |
 | Product engineering | Each $1m completed adds 0.007 technology index, subject to decay and bounds; supports demand | Current expense and cash; technology after three further rounds |
 
-A project committed in month 1 becomes available in month 4. For a project already in the saved pipeline, availability is `current month + remaining rounds`. Late projects may mature after the twelve-month mandate. The view lists that date without promising benefits within the current campaign.
+A project committed in month 1 becomes available in month 4. For a project already in the saved pipeline, availability is `current month + remaining rounds`. The `1.2.0` mandate lasts 36 months; existing `1.0.0`/`1.1.0` mandates retain 12 months. Projects and capability carry across year boundaries without a reset. A November decision (month 11) can first improve operations in February · Year 2 (month 14) in a three-year campaign. Late projects may still mature after the actual mandate ends; displaying a scheduled date does not promise an operating benefit inside the campaign.
 
 Factory capex does not independently improve quality or lower standard unit cost. Engineering is not a factory process-improvement project. This version has no separately selectable automation, tooling, facility-layout, engineering cost-reduction or workforce cross-training projects.
 
@@ -111,4 +111,4 @@ Both public functions return `status`, `month`, `forecastMonth` and `errors`:
 - `current-only`: the campaign has ended; current context and separately labeled latest actual flow remain available.
 - `invalid-state`: errors and empty product views; no fabricated diagnostics.
 
-No future state or forecast is substituted for an ended campaign. Readers do not mutate their arguments. Tests cover accounting reconciliation, warranty shortfalls, physical constraints, no-assembly denominators, capability semantics, investment timing, legacy and cyclical campaigns, terminal/invalid inputs and immutability.
+These tools remain active through month 35 in `1.2.0`, with month 36 as the last possible forecast. They continue to stop at month 12 for legacy campaigns or earlier modeled distress. Absolute report and pipeline months are displayed with their calendar month and year. No future state or forecast is substituted for an ended campaign. Readers do not mutate their arguments. Tests cover accounting reconciliation, warranty shortfalls, physical constraints, no-assembly denominators, capability semantics, investment timing, legacy and cyclical campaigns, continued forecasting and inventory reconciliation after the first year, terminal/invalid inputs and immutability.

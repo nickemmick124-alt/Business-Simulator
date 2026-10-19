@@ -1,3 +1,4 @@
+import { campaignLength } from './campaign-calendar.js';
 /** Read-only teaching views of the simulation's accounts and physical flows.
  * Money uses USD millions (M), unit costs USD thousands (K), and rates fractions.
  * No mechanic, random draw, plan, state or save is changed by this module.
@@ -12,7 +13,7 @@ function context(state, plan) {
   const stateCheck = validateState(state);
   if (!stateCheck.valid) return { status: 'invalid-state', month: null, forecastMonth: null, errors: [...stateCheck.errors], projected: null };
   const base = { month: state.month, forecastMonth: null, errors: [], projected: null };
-  if (state.status !== 'active' || state.month >= 12) return { ...base, status: 'current-only' };
+  if (state.status !== 'active' || state.month >= campaignLength(state)) return { ...base, status: 'current-only' };
   const planCheck = validatePlan(plan, state);
   if (!planCheck.valid) return { ...base, status: 'invalid-plan', errors: [...planCheck.errors] };
   return { ...base, status: 'forecast', forecastMonth: state.month + 1, projected: forecast(state, planCheck.plan) };
