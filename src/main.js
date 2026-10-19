@@ -3,6 +3,8 @@ import { World } from './world.js';
 import { loadGame, saveGame, clearGame, exportSave, parseSave } from './persistence.js';
 import { marketPanelHTML, marketDetailHTML, financePanelHTML, financeDetailHTML } from './strategy-views.js';
 import { economicsHTML, coachingSummaryHTML, coachingDetailHTML, climateHTML } from './learning-views.js';
+import { factoryDiagnosticsHTML, costLedgerHTML, marketPositionHTML, investmentLabHTML } from './operations-views.js';
+import { getInvestmentOptions } from './investments.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -55,6 +57,7 @@ let lastFocused;
 let modalMode = '';
 let projectionHorizon = 3;
 let coachingMonth = null;
+let investmentHorizon = 6;
 const loaded = loadGame();
 if (loaded.ok && !loaded.empty) {
   state = loaded.data.state; plan = loaded.data.plan; drafts = loaded.data.drafts;
@@ -159,7 +162,7 @@ function renderPlan() {
   const groups = [...new Set(PLAN_FIELDS.map(f=>f.group))];
   const fieldHTML = PLAN_FIELDS.filter(f=>f.group===planGroup).map(f=>`<div class="decision-field"><div class="field-title"><label for="field-${f.key}">${escape(f.label)}</label><span>${escape(f.unit)}</span></div><div class="field-input-row"><input type="range" data-field="${f.key}" aria-label="${escape(f.label)} slider" min="${f.min}" max="${f.max}" step="${f.step}" value="${plan[f.key]}"><div class="number-wrap"><input id="field-${f.key}" data-field="${f.key}" type="number" min="${f.min}" max="${f.max}" step="${f.step}" value="${plan[f.key]}" aria-describedby="help-${f.key}"></div></div><p id="help-${f.key}" class="field-help">${escape(f.help)}</p></div>`).join('');
   return `<div class="eyebrow-row"><span class="overline">THE DECISION ROOM</span><span class="tag">${shortMonths[state.month]} PLAN</span></div><div class="panel-title-row"><h2>Make your move.</h2><button class="mini-button" data-action="compare">Compare ↗</button></div><p class="lede">Set the numbers. Test the tradeoffs.<br>Nothing advances until you commit the round.</p>
-    <button class="secondary-button economics-entry" data-action="unit-economics">Unit economics & break-even ↗</button><div class="draft-row"><select id="draft-select" aria-label="Saved plan"><option value="">Current working plan</option>${drafts.map(d=>`<option value="${escape(d.id)}" ${activeDraft===d.id?'selected':''}>${escape(d.name)}</option>`).join('')}</select><button class="mini-button" data-action="save-draft">Save as…</button></div>
+    <button class="secondary-button economics-entry" data-action="unit-economics">Unit economics & break-even ↗</button><button class="secondary-button economics-entry" data-action="investment-lab">Investment lab · people, plant & product ↗</button><div class="draft-row"><select id="draft-select" aria-label="Saved plan"><option value="">Current working plan</option>${drafts.map(d=>`<option value="${escape(d.id)}" ${activeDraft===d.id?'selected':''}>${escape(d.name)}</option>`).join('')}</select><button class="mini-button" data-action="save-draft">Save as…</button></div>
     <div class="tab-strip" role="group" aria-label="Decision categories">${groups.map(g=>`<button data-plan-group="${g}" class="${planGroup===g?'active':''}">${g==='Investment'?'Invest':g==='Commercial'?'Market':g==='Production'?'Output':g==='Operations'?'People & plant':'Finance'}</button>`).join('')}</div>
     ${fieldHTML}${planGroup==='Production'?'<button class="secondary-button" data-action="demand-led">Suggest demand-led targets</button><p class="field-help">Uses expected dealer orders and existing stock to target a small finished-goods buffer. Review the forecast before committing.</p>':''}<div id="plan-errors" class="error-text" role="alert"></div><div id="forecast-panel"></div><div class="plan-actions"><button class="secondary-button" data-action="compare">Compare plans</button><button class="primary-button red" data-action="commit-preview">Commit round ↗</button></div><p class="panel-footnote" style="margin-top:12px">Forecasts use expected conditions. Actual results will vary.</p>`;
 }
@@ -179,7 +182,7 @@ function refreshForecast() {
 }
 function renderOperations() {
   const last=state.history.at(-1);
-  return `<div class="eyebrow-row"><span class="overline">OPERATIONS ROOM</span><span class="tag">${last?'Month '+state.month:'Opening position'}</span></div><h2>Follow the flow.</h2><p class="lede">A missing controller can hold a nearly finished machine. Inspect the work, then connect it to the numbers.</p>
+  return `<div class="eyebrow-row"><span class="overline">OPERATIONS ROOM</span><span class="tag">${last?'Month '+state.month:'Opening position'}</span></div><h2>Follow the flow.</h2><p class="lede">A missing controller can hold a nearly finished machine. Inspect the work, then connect it to the numbers.</p><div class="operator-panel-links"><button class="primary-button wide" data-action="factory-diagnostics">Diagnose factory constraints ↗</button><button class="secondary-button" data-action="investment-lab">Compare targeted investments ↗</button><button class="secondary-button" data-action="cost-ledger">Cost & quality ledger ↗</button></div>
   ${PRODUCTS.map(p=>{const s=state.products[p.id];const r=last?.products.find(x=>x.id===p.id);return `<div class="plant-card"><div class="plant-card-top"><div><h3>${p.name}</h3><p>${p.segment}</p></div><span class="badge-dot" style="background:${p.color}"></span></div><div class="plant-stats"><div><span>Awaiting parts</span><strong>${units(s.incomplete)}</strong></div><div><span>Ready to ship</span><strong>${units(s.finishedGoods)}</strong></div><div><span>Rework</span><strong>${units(s.rework)}</strong></div></div><div class="progress-track"><div class="progress-fill" style="width:${Math.round(s.quality*100)}%"></div></div><p>${percent(s.quality)} first-pass capability · ${units(s.controllers)} controllers available</p><button data-focus="${s.incomplete?'supply':'assembly'}">Inspect the ${s.incomplete?'shortage':'assembly line'} ↗</button></div>`;}).join('')}
   <div class="adviser"><div class="avatar">OP</div><div><span class="overline">YOUR OPERATIONS LEADER</span><p>Scheduling more units cannot clear a parts constraint. Stock buffers, supplier development and a feasible product mix work together.</p></div></div><div class="panel-footer"><button class="primary-button wide" data-action="open-plan">Adjust the operating plan<span>↗</span></button></div>`;
 }
@@ -190,8 +193,30 @@ function renderReports() {
   <div class="panel-footer"><button class="text-button" data-action="scoring">How the board evaluates your year</button></div>`;
 }
 function renderMarkets() { return climateHTML(state)+marketPanelHTML(state,plan); }
+function showFactoryDiagnostics() {
+  showModal('Find what holds the factory back.','FACTORY DIAGNOSTICS',factoryDiagnosticsHTML(state,plan),'<span>Current capability · expected operating flow</span><button class="primary-button" data-action="back-to-plan">Adjust the working plan ↗</button>','factory-diagnostics');
+}
+function showCostLedger() {
+  showModal('Know what the machine costs.','COST & QUALITY LEDGER',costLedgerHTML(state,plan),'<button class="secondary-button" data-action="open-finance">Return to Finance</button><button class="primary-button" data-action="investment-lab">Compare investments ↗</button>','cost-ledger');
+}
+function showMarketPosition() {
+  showModal('Are we winning the customer?','MARKET POSITION',marketPositionHTML(state,plan),'<span>Actual share · separate projected outcomes</span><button class="primary-button" data-action="open-commercial">Review pricing & support ↗</button>','market-position');
+}
+function showInvestmentLab(message='') {
+  showModal('Invest in the right constraint.','INVESTMENT LAB',investmentLabHTML(state,plan,investmentHorizon,message),'<span>Illustrative projections · no month is committed</span><button class="primary-button" data-action="back-to-plan">Review the whole plan ↗</button>','investment-lab');
+}
+function applyInvestment(id) {
+  try {
+    const option=getInvestmentOptions(state,plan,investmentHorizon).options.find(item=>item.id===id);
+    if(!option?.canApply)return;
+    plan=clone(option.plan);activeDraft='';persist();renderPanel();
+    const label=option.planChanges[0].label;
+    showInvestmentLab(label+' updated to '+money(option.costCommitment.proposedBudget)+(option.costCommitment.type==='monthly'?' per month.':' this month.'));
+    toast('Working plan updated. Review the tradeoffs before committing.');
+  }catch(error){toast(error.message,6500);}
+}
 function showUnitEconomics(month=null) {
-  showModal('What does a sale really earn?','UNIT ECONOMICS & BREAK-EVEN',economicsHTML(state,plan,month),'<span>Per-machine costs in $000 · company totals in $m</span><button class="primary-button" data-action="back-to-plan">Review the plan ↗</button>','economics');
+  showModal('What does a sale really earn?','UNIT ECONOMICS & BREAK-EVEN',economicsHTML(state,plan,month),'<button class="secondary-button" data-action="cost-ledger">Current cost & quality ledger ↗</button><button class="primary-button" data-action="back-to-plan">Review the plan ↗</button>','economics');
 }
 function showCoaching(month,alternative=null) {
   coachingMonth=month;
@@ -217,6 +242,7 @@ function applySettings() {
 }
 function showInspection(data) {
   $('#inspect-card').innerHTML=`<button class="close-small" data-action="close-inspect" aria-label="Close inspection">×</button><span class="overline">${escape(data.subtitle||'OPERATING DETAIL')}</span><h3>${escape(data.title)}</h3><p>${escape(data.description)}</p><div class="inspect-stats">${(data.metrics||[]).map(m=>`<div><span>${escape(m.label)}</span><strong>${escape(m.value)}</strong></div>`).join('')}</div>`;
+  if(location==='factory')$('#inspect-card').insertAdjacentHTML('beforeend','<button class="text-button inspect-diagnostics" data-action="factory-diagnostics">Diagnose costs & constraints ↗</button>');
   $('#inspect-card').classList.remove('hidden');
 }
 function showModal(title,eyebrow,body,footer='',mode='') {
@@ -316,6 +342,13 @@ document.addEventListener('click',event=>{
   if(button.dataset.location){setLocation(button.dataset.location);return;}
   if(button.dataset.planGroup){planGroup=button.dataset.planGroup;renderPanel();return;}
   if(button.dataset.horizon){projectionHorizon=Number(button.dataset.horizon)===12?12:3;showFinancialPlan();$(`[data-horizon="${projectionHorizon}"]`).focus();return;}
+  if(button.dataset.investmentHorizon){
+    const value=button.dataset.investmentHorizon;
+    if(!['3','6','year-end'].includes(value))return;
+    investmentHorizon=value==='year-end'?value:Number(value);showInvestmentLab();
+    document.querySelector('[data-investment-horizon="'+value+'"]')?.focus();return;
+  }
+  if(button.dataset.investmentApply){applyInvestment(button.dataset.investmentApply);return;}
   if(button.dataset.coachingMonth){showCoaching(Number(button.dataset.coachingMonth));return;}
   if(button.dataset.coachingAlternative&&coachingMonth){showCoaching(coachingMonth,button.dataset.coachingAlternative);return;}
   if(button.dataset.economicsMonth){showUnitEconomics(Number(button.dataset.economicsMonth));return;}
@@ -331,6 +364,10 @@ document.addEventListener('click',event=>{
     case 'market-detail':showMarketDetail();break;
     case 'financial-plan':showFinancialPlan();break;
     case 'unit-economics':showUnitEconomics();break;
+    case 'factory-diagnostics':showFactoryDiagnostics();break;
+    case 'cost-ledger':showCostLedger();break;
+    case 'market-position':showMarketPosition();break;
+    case 'investment-lab':showInvestmentLab();break;
     case 'back-to-plan':closeModal();setTab('plan');break;
     case 'next-plan':closeModal();setTab('plan');break;
     case 'commit-preview':showCommit();break;

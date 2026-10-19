@@ -5,6 +5,9 @@ import { parseHTML } from 'linkedom';
 import { PLAN_FIELDS, advanceMonth, balanceSheet, createInitialState, defaultPlan, forecast } from '../src/simulation.js';
 import { getMarketIntelligence, projectBusiness } from '../src/business-intelligence.js';
 import { getUnitEconomics } from '../src/unit-economics.js';
+import { getInvestmentOptions } from '../src/investments.js';
+import { getMarketPosition } from '../src/market-position.js';
+import { getFactoryDiagnostics, getCostLedger } from '../src/factory-diagnostics.js';
 import { STORAGE_KEY, exportSave, parseSave } from '../src/persistence.js';
 
 // In-process DOM integration only. This exercises the real application/model and
@@ -188,7 +191,77 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     click('[data-action="close-modal"]');
   });
 
+  await t.test('operational learning views expose the working company without changing decisions or inventing actuals', () => {
+    const before = saved();
+    for (const [tab, action, marker] of [
+      ['operations', 'factory-diagnostics', 'data-factory-diagnostics'],
+      ['finance', 'cost-ledger', 'data-cost-ledger'],
+      ['markets', 'market-position', 'data-market-position'],
+    ]) {
+      click(`[data-tab="${tab}"]`);
+      click(`[data-action="${action}"]`);
+      assert.equal(dialog.open, true);
+      assert.ok($(`#modal-content [${marker}]`), `Missing ${action} view`);
+      assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+      if (action === 'factory-diagnostics') {
+        assert.match($('#modal-content').textContent, /capacity/i);
+        assert.match($('#modal-content').textContent, /skill|training/i);
+        assert.match($('#modal-content').textContent, /controller|component/i);
+        for (const product of getFactoryDiagnostics(before.state, before.plan).products) {
+          const displayed = $$(`[data-factory-product="${product.id}"] .factory-flow strong`).map(element => element.textContent);
+          assert.deepEqual(displayed, ['target', 'capacity', 'assemblyCapacity', 'assembled', 'production'].map(key => units(product.flow[key])));
+        }
+      } else if (action === 'cost-ledger') {
+        assert.match($('#modal-content').textContent, /inventory/i);
+        assert.match($('#modal-content').textContent, /warranty/i);
+        assert.match($('#modal-content').textContent, /expense|income|profit/i);
+        const ledger = getCostLedger(before.state, before.plan);
+        const total = $$('[data-inventory-ledger] tbody tr').at(-1);
+        assert.equal(total.children[1].textContent, money(ledger.inventory.currentM));
+        assert.equal(total.children[2].textContent, money(ledger.inventory.forecastM));
+        const qualityExpense = $$('[data-quality-ledger] tbody tr').find(row => row.children[0].textContent === 'Quality expense subtotal');
+        assert.equal(qualityExpense.children[1].textContent, money(ledger.forecastQuality.qualityExpenseM));
+      } else {
+        assert.equal($('[data-market-position-current-share]').textContent, '—');
+        assert.equal($('[data-market-position-share-change]').textContent, '—');
+        assert.match($('#modal-content').textContent, /reputation/i);
+        assert.match($('#modal-content').textContent, /technology/i);
+        assert.match($('#modal-content').textContent, /forecast|expected|projected/i);
+      }
+      assert.deepEqual(saved().state, before.state, `${action} must not advance the campaign`);
+      assert.deepEqual(saved().plan, before.plan, `${action} must not change the working plan`);
+      click('[data-action="close-modal"]');
+    }
+  });
+
+  await t.test('investment experiments compare horizons and explicitly apply only the selected budget to the working plan', () => {
+    click('[data-tab="operations"]');
+    const before = saved();
+    click('[data-action="investment-lab"]');
+    assert.ok($('[data-investment-lab]'));
+    assert.equal($$('[data-investment-option]').length, 6, 'show the working baseline plus five targeted experiments');
+    assert.equal($('[data-investment-horizon="6"]').getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(new Set($$('[data-investment-apply]').map(button => button.dataset.investmentApply)), new Set(['training', 'quality', 'maintenance', 'capacity', 'engineering']));
+    for (const horizon of ['3', 'year-end', '6', '3']) {
+      click(`[data-investment-horizon="${horizon}"]`);
+      assert.equal($(`[data-investment-horizon="${horizon}"]`).getAttribute('aria-pressed'), 'true');
+      assert.deepEqual(saved().state, before.state, 'comparing investments must not commit a month');
+      assert.deepEqual(saved().plan, before.plan, 'comparing investments must not adopt a suggestion');
+      assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+    }
+    const expected = getInvestmentOptions(before.state, before.plan, 3).options.find(option => option.id === 'training');
+    click('[data-investment-apply="training"]');
+    assert.deepEqual(saved().plan, expected.plan, 'apply should change exactly the selected candidate budget');
+    assert.deepEqual(saved().state, before.state, 'adopting a budget is a working-plan edit, not a committed round');
+    assert.deepEqual(saved().drafts, before.drafts, 'investment experiments must preserve saved alternatives');
+    assert.ok($('[data-investment-lab]'), 'keep the comparison visible with the newly edited baseline');
+    assert.ok(saved().plan.training > before.plan.training);
+    click('[data-action="close-modal"]');
+    click('[data-tab="plan"]');
+  });
+
   await t.test('numerical edits recompute the forecast without advancing; invalid inputs block commitment', () => {
+    click('[data-tab="briefing"]');
     click('[data-action="open-plan"]');
     const initialProjection = $('#forecast-panel').textContent;
     edit('#field-tractorPrice', 160);
@@ -222,6 +295,22 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.match($('#modal-content').textContent, /check|correct|invalid|must be between/i);
     assert.deepEqual(saved().state, validSave.state);
     click('[data-action="close-modal"]');
+    for (const [tab, action, marker] of [
+      ['operations', 'factory-diagnostics', 'data-factory-diagnostics'],
+      ['finance', 'cost-ledger', 'data-cost-ledger'],
+      ['markets', 'market-position', 'data-market-position'],
+      ['operations', 'investment-lab', 'data-investment-lab'],
+    ]) {
+      click(`[data-tab="${tab}"]`);
+      click(`[data-action="${action}"]`);
+      assert.ok($(`#modal-content [${marker}]`), `${action} should still explain an invalid working plan`);
+      assert.match($('#modal-content').textContent, /must be between|correct|invalid|unavailable/i);
+      assert.ok($$('[data-investment-apply]').every(button => button.disabled), 'an invalid baseline cannot produce actionable investment comparisons');
+      assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+      assert.deepEqual(saved().state, validSave.state);
+      assert.deepEqual(saved().plan, validSave.plan);
+      click('[data-action="close-modal"]');
+    }
     click('[data-tab="plan"]');
     edit('#field-tractorPrice', 160);
   });
@@ -448,6 +537,24 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.deepEqual(saved().plan, before.plan);
   });
 
+  await t.test('market position compares completed months separately from the edited next-month forecast', () => {
+    click('[data-action="close-modal"]');
+    const before = saved();
+    const expected = getMarketPosition(before.state, before.plan);
+    assert.equal(before.state.month, 2);
+    click('[data-tab="markets"]');
+    click('[data-action="market-position"]');
+    assert.equal($('[data-market-position-current-share]').textContent, share(expected.aggregate.current.unitShare));
+    const percentagePoints = expected.aggregate.changePP * 100;
+    const displayedChange = $('[data-market-position-share-change]').textContent.replace('−', '-');
+    assert.equal(parseFloat(displayedChange), Number(percentagePoints.toFixed(1)));
+    assert.match(displayedChange, /pp|point/i, 'share movement is percentage points, not sales growth');
+    assert.match($('#modal-content').textContent, /actual/i);
+    assert.match($('#modal-content').textContent, /forecast|expected|projected/i);
+    assert.deepEqual(saved().state, before.state);
+    assert.deepEqual(saved().plan, before.plan);
+  });
+
   await t.test('completed and distressed campaigns retain financial visibility without inventing another round', async () => {
     click('[data-action="close-modal"]');
     for (const status of ['completed', 'distressed']) {
@@ -482,6 +589,24 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
       click('[data-tab="markets"]');
       assert.doesNotMatch($('#command-panel').textContent, /NaN|Infinity|undefined/);
       assert.deepEqual(saved().state, terminal);
+      for (const [tab, action, marker] of [
+        ['operations', 'factory-diagnostics', 'data-factory-diagnostics'],
+        ['finance', 'cost-ledger', 'data-cost-ledger'],
+        ['markets', 'market-position', 'data-market-position'],
+        ['operations', 'investment-lab', 'data-investment-lab'],
+      ]) {
+        click(`[data-tab="${tab}"]`);
+        click(`[data-action="${action}"]`);
+        assert.ok($(`#modal-content [${marker}]`), `${status} campaigns retain access to ${action}`);
+        assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+        assert.ok($$('[data-investment-apply]').every(button => button.disabled), 'ended campaigns cannot apply a future investment');
+        assert.deepEqual(saved().state, terminal);
+        if (action === 'market-position') {
+          const position = getMarketPosition(terminal, saved().plan);
+          assert.equal($('[data-market-position-current-share]').textContent, share(position.aggregate.current.unitShare));
+        }
+        click('[data-action="close-modal"]');
+      }
     }
   });
 
