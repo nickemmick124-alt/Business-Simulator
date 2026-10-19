@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#213b36">
+  <meta name="description" content="Take the CEO seat. Plan the business, explore the factory, and see the consequences in an original 3D strategy simulation.">
+  <title>CNH Executive — Business Simulator</title>
+  <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="importmap">{"imports":{"three":"./vendor/three.module.js","three/addons/":"./vendor/addons/"}}</script>
+</head>
+<body>
+  <a class="skip-link" href="#command-panel">Skip to CEO controls</a>
+  <div id="world" aria-label="Interactive 3D headquarters and factory"></div>
+  <div id="world-loader" class="world-loader"><span class="loader-mark">C<span>NH</span></span><span>Opening headquarters<span class="loading-dots">…</span></span></div>
+  <div class="scene-vignette" aria-hidden="true"></div>
+  <aside class="rail" aria-label="Game sections">
+    <a class="brand-mark" href="./" aria-label="CNH Executive home">C<span>NH</span><i></i></a>
+    <div class="rail-rule"></div>
+    <nav id="main-nav"></nav>
+    <div class="rail-bottom"><button data-action="help" class="rail-button" title="How to play" aria-label="How to play"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 4.4 1.6c-1.4 1-1.9 1.4-1.9 3M12 17h.01"/></svg><span>Guide</span></button><button data-action="settings" class="rail-button" title="Saves and settings" aria-label="Saves and settings"><svg viewBox="0 0 24 24"><path d="M4 7h16M4 17h16"/><circle cx="9" cy="7" r="2.5"/><circle cx="15" cy="17" r="2.5"/></svg><span>Settings</span></button></div>
+  </aside>
+  <header class="topbar">
+    <div class="wordmark"><strong>EXECUTIVE</strong><span>A CNH BUSINESS SIMULATION</span></div>
+    <div class="topbar-center"><span class="live-dot"></span><span id="company-status">YOUR COMPANY. YOUR CALL.</span></div>
+    <div class="topbar-actions"><button class="round-badge" data-action="history" id="round-badge"><span>YEAR 01</span><strong>JANUARY</strong></button><button class="primary-button" data-action="commit-preview" id="advance-button">Advance month <span>↗</span></button></div>
+  </header>
+  <main>
+    <section id="command-panel" class="command-panel" tabindex="-1" aria-label="CEO controls"></section>
+    <div class="location-switch" role="group" aria-label="Explore locations"><button class="active" data-location="headquarters"><span class="location-icon">⌂</span> Headquarters</button><button data-location="factory"><span class="location-icon">▥</span> Factory floor</button></div>
+    <div class="scene-label"><span class="overline" id="location-eyebrow">THE EXECUTIVE CAMPUS</span><h1 id="location-title">Headquarters</h1><span id="location-caption">A new perspective on the whole business.</span></div>
+    <section id="inspect-card" class="inspect-card hidden" aria-live="polite"></section>
+    <div class="world-controls"><button data-action="camera-orbit" class="active" title="Drag to orbit. Scroll to zoom."><svg viewBox="0 0 24 24"><ellipse cx="12" cy="12" rx="10" ry="5"/><path d="M12 2v20M2 12h20"/></svg> Orbit</button><button data-action="camera-walk" title="Use W A S D to move; drag to look."><svg viewBox="0 0 24 24"><circle cx="13" cy="4" r="2"/><path d="m10 9 3-2 3 5 4 1M13 7l-2 8-5 6m5-6 5 6M10 9l-4 4"/></svg> Walk</button><button data-action="reset-camera" title="Reset camera" aria-label="Reset camera"><svg viewBox="0 0 24 24"><path d="M4 10a8 8 0 1 1 1 8M4 4v6h6"/></svg></button></div>
+    <span class="scene-hint" id="scene-hint">DRAG TO EXPLORE <b>·</b> SCROLL TO ZOOM <b>·</b> SELECT A WORK AREA</span>
+    <section id="metrics-bar" class="metrics-bar" aria-label="Company performance"></section>
+  </main>
+  <div class="save-indicator" id="save-indicator" role="status">Saved on this device</div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <dialog id="modal"><div id="modal-content"></div></dialog>
+  <input id="import-file" type="file" accept="application/json,.json" hidden>
+  <noscript>This strategy game needs JavaScript enabled. All simulation runs in your browser.</noscript>
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

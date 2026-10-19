@@ -1,0 +1,22 @@
+{
+  "name": "cnh-business-simulator",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An original CEO strategy simulation with a 3D headquarters and factory world.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "dev": "node scripts/serve.mjs",
+    "test": "node --test test/*.test.js",
+    "check": "node --check src/main.js && node --check src/world.js && node --check src/simulation.js && node --check src/persistence.js"
+  },
+  "dependencies": {
+    "three": "0.186.1"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "linkedom": "0.18.13"
+  }
+}
