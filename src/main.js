@@ -1,6 +1,7 @@
 import { PRODUCTS, PLAN_FIELDS, MODEL_VERSION, createInitialState, defaultPlan, validatePlan, forecast, advanceMonth, getCampaignOutcome, getMarketOutlook, balanceSheet } from './simulation.js';
 import { World } from './world.js';
 import { loadGame, saveGame, clearGame, exportSave, parseSave } from './persistence.js';
+import { marketPanelHTML, marketDetailHTML, financePanelHTML, financeDetailHTML } from './strategy-views.js';
 
 const $ = selector => document.querySelector(selector);
 const $$ = selector => [...document.querySelectorAll(selector)];
@@ -47,6 +48,7 @@ let canAutosave = true;
 let toastTimer;
 let lastFocused;
 let modalMode = '';
+let projectionHorizon = 3;
 const loaded = loadGame();
 if (loaded.ok && !loaded.empty) {
   state = loaded.data.state; plan = loaded.data.plan; drafts = loaded.data.drafts;
@@ -98,7 +100,7 @@ function renderLocation() {
   $('#location-caption').textContent = location === 'factory' ? 'Every machine has a story. Follow the flow.' : 'A new perspective on the whole business.';
 }
 function renderNav() {
-  const sections = [['briefing','home','Briefing'],['plan','plan','Decisions'],['operations','factory','Operations'],['reports','reports','Results'],['markets','globe','Markets']];
+  const sections = [['briefing','home','Briefing'],['plan','plan','Decisions'],['operations','factory','Operations'],['markets','globe','Markets'],['finance','cash','Finance'],['reports','reports','Results']];
   $('#main-nav').innerHTML = sections.map(([id,img,label]) => `<button class="rail-button ${tab===id?'active':''}" data-tab="${id}" aria-label="${label}" ${tab===id?'aria-current="page"':''}>${icon(img)}<span>${label}</span></button>`).join('');
 }
 function renderHeader() {
@@ -122,7 +124,7 @@ function renderMetrics() {
   $('#metrics-bar').innerHTML = data.map(([img,label,value,trend,change])=>`<div class="metric"><div class="metric-label">${icon(img)}${label}</div><div class="metric-value">${value}</div><div class="metric-trend ${typeof change==='number'?(change<0?'negative':'positive'):''}">${trend}</div></div>`).join('');
 }
 function renderPanel() {
-  const contents = {briefing:renderBriefing,plan:renderPlan,operations:renderOperations,reports:renderReports,markets:renderMarkets};
+  const contents = {briefing:renderBriefing,plan:renderPlan,operations:renderOperations,reports:renderReports,markets:renderMarkets,finance:()=>financePanelHTML(state,plan)};
   $('#command-panel').innerHTML = `<div class="panel-inner">${contents[tab]()}</div>`;
   if (tab === 'plan') refreshForecast();
 }
@@ -135,6 +137,7 @@ function renderBriefing() {
   return `<div class="eyebrow-row"><span class="overline">${complete?'THE BOARD’S VERDICT':'YOUR MONTHLY BRIEFING'}</span><span class="tag live">${complete?'Year 01':`${shortMonths[state.month]} · Year 01`}</span></div>
     <h2>${headline}</h2><p class="lede">${complete?escape(result.summary):'The whole company is in your hands. Make the plan, explore the operation, and follow the consequences.'}</p>
     <div class="mandate"><strong>Your board mandate</strong>Protect cash. Restore dependable delivery. Build a business that is stronger at year-end.</div>
+    <div class="business-entry"><button data-action="open-markets">${icon('globe')}<span>Understand the market<small>Market size, your share & demand outlook</small></span><b>↗</b></button><button data-action="open-finance">${icon('cash')}<span>Read the financial position<small>Balance sheet, cash & forward projections</small></span><b>↗</b></button></div>
     ${complete?`<div class="completion"><span class="overline">BOARD SCORE</span><h3>${result.score}<small> / 100</small></h3><p>${escape(result.explanation)}</p></div>`:`
     <div class="section-rule"></div><span class="overline">ON YOUR DESK</span>
     <div class="brief-event"><div class="event-icon warning">${icon('alert')}</div><div><h3>${state.month<2?'A critical component is running late':'Know what the market can absorb'}</h3><p>${escape(outlook.summary)}</p><button data-action="inspect-supply">Visit the operation ↗</button></div></div>
@@ -164,7 +167,7 @@ function refreshForecast() {
   $('#plan-errors').textContent = forecastResult?.error || '';
   if(!forecastResult || forecastResult.error){target.innerHTML='';return;}
   const m=forecastResult.report.metrics;
-  target.innerHTML=`<div class="forecast-box"><div class="forecast-top"><span class="overline">PROJECTED MONTH-END</span><span class="tag">Forecast</span></div><div class="forecast-grid"><div><span>Cash</span><strong class="${forecastResult.state.cash<20?'negative':''}">${money(forecastResult.state.cash)}</strong></div><div><span>Net profit</span><strong class="${m.profit<0?'negative':''}">${money(m.profit)}</strong></div><div><span>Delivery</span><strong>${percent(m.serviceLevel)}</strong></div></div><p class="forecast-note">${m.cashChange < -10 ? `Cash is projected to fall ${money(Math.abs(m.cashChange))}. Inspect inventory and lending before committing.` : 'Expected demand and supplier performance. Market surprises and execution will affect the actual result.'}</p></div>`;
+  target.innerHTML=`<div class="forecast-box"><div class="forecast-top"><span class="overline">PROJECTED MONTH-END</span><span class="tag">Forecast</span></div><div class="forecast-grid"><div><span>Cash</span><strong class="${forecastResult.state.cash<20?'negative':''}">${money(forecastResult.state.cash)}</strong></div><div><span>Net profit</span><strong class="${m.profit<0?'negative':''}">${money(m.profit)}</strong></div><div><span>Delivery</span><strong>${percent(m.serviceLevel)}</strong></div></div><p class="forecast-note">${m.cashChange < -10 ? `Cash is projected to fall ${money(Math.abs(m.cashChange))}. Inspect inventory and lending before committing.` : 'Expected demand and supplier performance. Market surprises and execution will affect the actual result.'}</p><button class="text-button" data-action="financial-plan">See balance sheet & longer projections ↗</button></div>`;
 }
 function renderOperations() {
   const last=state.history.at(-1);
@@ -175,13 +178,15 @@ function renderOperations() {
 function renderReports() {
   const last=state.history.at(-1);
   return `<div class="eyebrow-row"><span class="overline">YOUR PERFORMANCE</span><span class="tag">YEAR 01</span></div><h2>Every result<br>has a reason.</h2><p class="lede">Compare your expectations with what happened. Follow cash, output and delivery back to the operation.</p>
-  ${last?`<div class="section-rule"></div><div class="plant-stats"><div><span>Year-to-date profit</span><strong>${money(sum(state.history.map(r=>r.metrics.profit)))}</strong></div><div><span>Cash movement</span><strong>${signed(sum(state.history.map(r=>r.metrics.cashChange)))}</strong></div><div><span>Machines shipped</span><strong>${units(sum(state.history.map(r=>r.metrics.deliveries)))}</strong></div></div><div class="section-rule"></div><span class="overline">ROUND HISTORY</span>${[...state.history].reverse().map(r=>`<div class="history-row"><button data-report="${r.month}">${months[r.month-1]}<span>${units(r.metrics.production)} built · ${percent(r.metrics.serviceLevel)} delivered</span></button><strong class="${r.metrics.profit<0?'negative':'positive'}">${money(r.metrics.profit)}</strong></div>`).join('')}<div class="panel-footer"><button class="primary-button wide" data-action="last-report">Open latest review<span>↗</span></button><button class="secondary-button" data-action="statements">View financial statements</button></div>`:`<div class="empty-state">${icon('reports')}<p style="margin:12px 0">Your first report arrives when you commit January’s plan.</p><button class="secondary-button" data-action="open-plan">Build your first plan</button></div>`}
+  ${last?`<div class="section-rule"></div><div class="plant-stats"><div><span>Year-to-date profit</span><strong>${money(sum(state.history.map(r=>r.metrics.profit)))}</strong></div><div><span>Cash movement</span><strong>${signed(sum(state.history.map(r=>r.metrics.cashChange)))}</strong></div><div><span>Machines shipped</span><strong>${units(sum(state.history.map(r=>r.metrics.deliveries)))}</strong></div></div><div class="section-rule"></div><span class="overline">ROUND HISTORY</span>${[...state.history].reverse().map(r=>`<div class="history-row"><button data-report="${r.month}">${months[r.month-1]}<span>${units(r.metrics.production)} built · ${percent(r.metrics.serviceLevel)} delivered</span></button><strong class="${r.metrics.profit<0?'negative':'positive'}">${money(r.metrics.profit)}</strong></div>`).join('')}<div class="panel-footer"><button class="primary-button wide" data-action="last-report">Open latest review<span>↗</span></button><button class="secondary-button" data-action="statements">View financial statements</button></div>`:`<div class="empty-state">${icon('reports')}<p style="margin:12px 0">Your first report arrives when you commit January’s plan.</p><button class="secondary-button" data-action="open-plan">Build your first plan</button><button class="secondary-button" data-action="statements">View opening balance sheet</button></div>`}
   <div class="panel-footer"><button class="text-button" data-action="scoring">How the board evaluates your year</button></div>`;
 }
-function renderMarkets() {
-  const outlook=getMarketOutlook(state);
-  return `<div class="eyebrow-row"><span class="overline">COMMERCIAL INTELLIGENCE</span><span class="tag">OUTLOOK</span></div><h2>Know the market.<br>Earn the order.</h2><p class="lede">${escape(outlook.summary)}</p><div class="section-rule"></div><span class="overline">DEALER NETWORK</span>${PRODUCTS.map(p=>{const s=state.products[p.id];return `<div class="plant-card"><div class="plant-card-top"><div><h3>${p.name}</h3><p>${p.segment}</p></div><span class="tag">${percent(s.reputation)} trust</span></div><div class="plant-stats"><div><span>Dealer stock</span><strong>${units(s.dealerStock)}</strong></div><div><span>Installed fleet</span><strong>${units(s.installedBase)}</strong></div><div><span>List price</span><strong>$${units(s.lastPrice)}k</strong></div></div></div>`;}).join('')}
-  <div class="adviser"><div class="avatar">CM</div><div><span class="overline">YOUR COMMERCIAL LEADER</span><p>Customers compare price, reliability and availability. Financing can support the purchase, but it also creates a funding commitment.</p></div></div><div class="panel-footer"><button class="primary-button wide" data-action="open-commercial">Review pricing & support<span>↗</span></button></div>`;
+function renderMarkets() { return marketPanelHTML(state,plan); }
+function showMarketDetail() {
+  showModal('The market behind your plan.','MARKET INTELLIGENCE',marketDetailHTML(state,plan),'<span>Illustrative market assumptions · Year 01</span><button class="primary-button" data-action="open-commercial">Review pricing & support ↗</button>','markets');
+}
+function showFinancialPlan() {
+  showModal('The business, projected.','FINANCIAL PLANNING',financeDetailHTML(state,plan,projectionHorizon),'<span>USD millions · Expected conditions</span><button class="primary-button" data-action="back-to-plan">Return to decisions ↗</button>','financial-plan');
 }
 function updateWorld() {
   const m=metrics();
@@ -200,7 +205,7 @@ function showInspection(data) {
   $('#inspect-card').classList.remove('hidden');
 }
 function showModal(title,eyebrow,body,footer='',mode='') {
-  const modal=$('#modal');lastFocused=document.activeElement;modalMode=mode;
+  const modal=$('#modal');if(!modal.open)lastFocused=document.activeElement;modalMode=mode;
   $('#modal-content').innerHTML=`<div class="modal-header"><div><span class="overline">${escape(eyebrow)}</span><h2>${escape(title)}</h2></div><button class="modal-close" data-action="close-modal" aria-label="Close dialog">×</button></div><div class="modal-body">${body}</div>${footer?`<div class="modal-footer">${footer}</div>`:''}`;
   modal.setAttribute('aria-label',title);
   if(!modal.open)modal.showModal();
@@ -247,7 +252,7 @@ function showCompare() {
   showModal('Choose the tradeoff.','PLAN COMPARISON',`<p>Compare plans under the same expected conditions. These are projections, not guaranteed outcomes.</p><div class="table-scroll" style="margin-top:20px"><table class="comparison-table"><thead><tr><th>Projected result</th>${results.map(d=>`<th>${escape(d.name)}</th>`).join('')}</tr></thead><tbody>${rows.map(([label,fn])=>`<tr><td>${label}</td>${results.map(d=>`<td>${d.error?'Unavailable':fn(d.result)}</td>`).join('')}</tr>`).join('')}<tr><td>Use this plan</td><td>Working plan</td>${results.slice(1).map((d,i)=>`<td>${d.error?`<span class="negative">${escape(d.error)}</span>`:`<button class="secondary-button" data-use-draft="${escape(drafts[i].id)}">Load plan</button>`}</td>`).join('')}</tr></tbody></table></div><div class="info-callout" style="margin-top:22px">A plan that maximizes production may consume cash or overstock dealers. A plan that minimizes spending can erode quality and future capability. The board considers the condition of the business at year-end.</div>`,'<span>Forecasts hold external assumptions constant.</span><button class="primary-button" data-action="back-to-plan">Return to decisions ↗</button>','compare');
 }
 function showStatements() {
-  const r=state.history.at(-1);if(!r){toast('Financial results appear after your first round.');return;}
+  const r=state.history.at(-1);if(!r){showFinancialPlan();return;}
   const statement=(title,rows)=>`<div><div class="subheading">${title}</div><table><tbody>${rows.map(([label,value])=>`<tr><td>${label}</td><td>${money(value)}</td></tr>`).join('')}</tbody></table></div>`;
   showModal(`${months[r.month-1]} financial statements`,'THE CFO’S REPORT',`<div class="review-columns">${statement('INCOME STATEMENT',[['Wholesale equipment revenue',r.income.wholesaleRevenue],['Financing interest income',r.income.loanInterestIncome],['Total revenue',r.income.revenue],['Equipment cost of sales',-r.income.cogs],['Operating expenses',-r.income.operatingExpense],['Depreciation',-r.income.depreciation],['Warranty provisions',-r.income.warrantyAccrual],['Warranty shortfall',-r.income.warrantyShortfall],['Credit losses',-r.income.creditLosses],['Operating profit',r.income.operatingProfit],['Interest expense',-r.income.interestExpense],['Income tax',-r.income.tax],['Net profit',r.income.profit]])}${statement('BALANCE SHEET',[['Cash',r.balanceSheet.cash],['Trade receivables',r.balanceSheet.receivables],['Manufacturer inventory',r.balanceSheet.inventory],['Net fixed assets',r.balanceSheet.fixedAssets],['Customer loan book',r.balanceSheet.loanBook],['Total assets',r.balanceSheet.assets],['Corporate debt',r.balanceSheet.corporateDebt],['Finance funding',r.balanceSheet.financeDebt],['Trade payables',r.balanceSheet.payables],['Warranty reserve',r.balanceSheet.warrantyReserve],['Equity',r.balanceSheet.equity],['Liabilities + equity',r.balanceSheet.liabilitiesAndEquity]])}</div><div class="review-columns" style="margin-top:26px">${statement('CASH FLOW',[['Opening cash',r.cashFlow.opening],['Operating cash flow',r.cashFlow.operating],['Investing cash flow',r.cashFlow.investing],['Financing cash flow',r.cashFlow.financing],['Net cash movement',r.cashFlow.cashChange],['Closing cash',r.cashFlow.closing]])}<div class="info-callout">Dealer inventory belongs to independent dealers after qualifying wholesale sales. It is tracked operationally, not counted in manufacturer inventory. Customer loan principal repayments reduce the loan asset; only interest is income. This is a simplified educational model.</div></div>`,'<span>USD millions · Rounding may affect displayed totals.</span><button class="secondary-button" data-action="last-report">Return to monthly review</button>','statements');
 }
@@ -293,13 +298,18 @@ document.addEventListener('click',event=>{
   if(button.dataset.tab){setTab(button.dataset.tab);return;}
   if(button.dataset.location){setLocation(button.dataset.location);return;}
   if(button.dataset.planGroup){planGroup=button.dataset.planGroup;renderPanel();return;}
+  if(button.dataset.horizon){projectionHorizon=Number(button.dataset.horizon)===12?12:3;showFinancialPlan();$(`[data-horizon="${projectionHorizon}"]`).focus();return;}
   if(button.dataset.report){showReport(Number(button.dataset.report));return;}
   if(button.dataset.focus){focusArea(button.dataset.focus);return;}
   if(button.dataset.reviewFocus){focusArea(button.dataset.reviewFocus);return;}
   if(button.dataset.useDraft){useDraft(button.dataset.useDraft);return;}
   switch(button.dataset.action){
     case 'open-plan':closeModal();setTab('plan');break;
-    case 'open-commercial':planGroup='Commercial';setTab('plan');break;
+    case 'open-commercial':closeModal();planGroup='Commercial';setTab('plan');break;
+    case 'open-markets':closeModal();setTab('markets');break;
+    case 'open-finance':closeModal();setTab('finance');break;
+    case 'market-detail':showMarketDetail();break;
+    case 'financial-plan':showFinancialPlan();break;
     case 'back-to-plan':closeModal();setTab('plan');break;
     case 'next-plan':closeModal();setTab('plan');break;
     case 'commit-preview':showCommit();break;
