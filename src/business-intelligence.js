@@ -3,7 +3,7 @@
  * Currency is USD millions unless named referencePrice ($000); ratios are fractions.
  * This layer does not alter simulation mechanics, save data, or the model version.
  */
-import { PRODUCTS, balanceSheet, forecast, getMarketOutlook, validatePlan, validateState } from './simulation.js';
+import { PRODUCTS, CYCLICAL_MODEL_VERSION, balanceSheet, forecast, getMarketOutlook, validatePlan, validateState } from './simulation.js';
 
 const BASELINE_UNIT_SHARES = Object.freeze({ tractor: 0.20, harvester: 0.18, loader: 0.16 });
 const CORPORATE_CREDIT_LIMIT = 160;
@@ -26,11 +26,11 @@ function checkPlan(state, plan) {
   return checked.plan;
 }
 
-/** Fixed, public market denominator. Player decisions only affect the numerator. */
-function marketTimeline() {
+/** Public scenario/observed denominator. Player decisions affect the numerator. */
+function marketTimeline(state) {
   const timeline = [];
   for (let month = 1; month <= 12; month += 1) {
-    const outlook = getMarketOutlook({ month: month - 1 });
+    const outlook = getMarketOutlook({ ...state, month: month - 1 });
     const products = PRODUCTS.map(product => {
       const season = product.segment === 'Agriculture' ? outlook.agriculture : outlook.construction;
       const units = Math.round(product.baseDemand / BASELINE_UNIT_SHARES[product.id] * season);
@@ -78,7 +78,8 @@ function nextShare(report, market, prior) {
  */
 export function getMarketIntelligence(state, plan) {
   checkState(state);
-  const timeline = marketTimeline();
+  const timeline = marketTimeline(state);
+  const cyclical = state.version === CYCLICAL_MODEL_VERSION;
   const last = state.history.at(-1) ?? null;
   const nextReport = active(state) && plan != null ? forecast(state, checkPlan(state, plan)).report : null;
   const upcomingMarket = active(state) ? timeline[state.month] : null;
@@ -88,11 +89,11 @@ export function getMarketIntelligence(state, plan) {
   };
   return {
     scope: 'Modeled addressable market for three equipment families in this campaign; not the global equipment market or reported CNH market share.',
-    methodology: 'Monthly industry units equal baseline company demand divided by an assumed reference unit share, multiplied by the public category outlook. Annual value sums twelve months at fixed reference retail prices. Company share uses customer retail sales, not dealer shipments.',
+    methodology: `Monthly industry units equal baseline company demand divided by an assumed reference unit share, multiplied by ${cyclical ? 'the observed category conditions for completed months and the latest public outlook for future months' : 'the public category outlook'}. Annual value sums twelve months at fixed reference retail prices. Company share uses customer retail sales, not dealer shipments.`,
     assumptions: [
       'Synthetic reference unit shares: tractors 20%, harvesters 18%, loaders 16%. These scale the market; they are not measured or guaranteed company shares.',
       'Reference retail prices are $145k per tractor, $360k per harvester, and $195k per loader. Market value excludes financing and does not equal company wholesale revenue.',
-      'Industry demand follows the public seasonal outlook. Player prices, spending, financing rates, production, and hidden random events do not resize this denominator.',
+      cyclical ? 'Industry demand includes observed cycle changes and shocks for completed months. Future months use the latest public outlook without seeing future events. Player decisions do not resize industry demand; the full-year reference updates as conditions become known.' : 'Industry demand follows the public seasonal outlook. Player prices, spending, financing rates, production, and hidden random events do not resize this denominator.',
       'Month-over-month changes compare the next month with the last completed month. No prior-year month is invented for month 1. Future company results are expected scenarios, not guarantees.',
     ],
     annual, timeline,
@@ -210,7 +211,7 @@ export function projectBusiness(state, plan, horizon = 3) {
   }
   const firstPlan = checkPlan(state, plan);
   const subsequentPlan = { ...firstPlan, debtChange: 0, capex: 0 };
-  const timeline = marketTimeline();
+  const timeline = marketTimeline(state);
   let projectedState = state;
   let priorReport = state.history.at(-1) ?? null;
   const count = Math.min(horizon, result.horizonAvailable);

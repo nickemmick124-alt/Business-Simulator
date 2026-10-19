@@ -4,7 +4,7 @@ A single-player CEO strategy game for desktop browsers. Set numerical operating 
 
 This is an independent, CNH-inspired game, not an official CNH product. Products, facilities, events, and operating and financial parameters are illustrative. The model does not predict CNH performance or reproduce an actual facility.
 
-[Source repository](https://github.com/nickemmick124-alt/Business-Simulator) · [Design brief](docs/design-brief.md) · [Simulation rules](docs/simulation-model.md) · [Market and financial planning model](docs/market-finance-model.md) · [Development roadmap](docs/roadmap.md)
+[Source repository](https://github.com/nickemmick124-alt/Business-Simulator) · [Learning guide](docs/learning-guide.md) · [Design brief](docs/design-brief.md) · [Simulation rules](docs/simulation-model.md) · [Market and financial planning model](docs/market-finance-model.md) · [Development roadmap](docs/roadmap.md)
 
 [Hosted preview](https://cnh-executive-world.nickem.chatgpt.site) — owner-private access through ChatGPT. Running the static build yourself does not require an account.
 
@@ -23,9 +23,9 @@ Open **http://localhost:4173**. The development server serves `dist/`; run `npm 
 ## Play
 
 1. Read **Briefing**, then inspect **Markets**, **Finance**, and **Operations**. You begin as CEO of an operating company with inventory, dealer stock, loans, debt, and existing equipment in service. The opening balance sheet is available before the first round.
-2. Open **Decisions**. Set product prices and output, marketing, financing APR, quality, maintenance, training, overtime, component buffers, engineering, factory investment, and borrowing or repayment. Save named alternatives and use **Compare plans**. Check **Finance → Balance sheet & projections** to see how a policy affects future cash before committing.
+2. Open **Decisions**. Set product prices and output, marketing, financing APR, quality, maintenance, training, overtime, component buffers, engineering, factory investment, and borrowing or repayment. Use **Unit economics & break-even** to check what each shipment earns, save named alternatives, and use **Compare plans**. Check **Finance → Balance sheet & projections** to see how a policy affects future cash before committing.
 3. Select **Commit round** or **Advance month**, review the forecast, and confirm. Only commitment advances business time. Most policies carry forward; factory investment and corporate borrowing or repayment reset each month.
-4. Review actual results against the forecast, follow operating explanations, and inspect the financial statements. Adjust the next plan to protect cash, delivery, quality, and future capability. Financial distress can end the mandate before December.
+4. Review actual results against the forecast, the **Decision quality** grade, and **What worked, what to change**. Inspect the financial statements and test the coach's explanation against your intent. Adjust the next plan to protect cash, delivery, quality, and future capability. Financial distress can end the mandate before December.
 
 Price inputs use **USD thousands**; financial reports use **USD millions**. Forecasts use expected conditions, while committed rounds include seeded variation. The same initial state, model version, seed, and decisions reproduce the same results.
 
@@ -38,6 +38,16 @@ Market size is a synthetic scenario assumption for the three modeled product fam
 **Finance → Balance sheet & projections** compares the current balance sheet with the next month's forecast, including the change in each balance. Select **Next 3 months** or **To year-end** to inspect the projected cash path, minimum cash within the view, period profit, corporate borrowing headroom, and monthly income and cash-flow statements. The latest actual month appears beside forecast months when available. Working-capital and cash-movement explanations connect the financial position to operating choices.
 
 Projections carry expected inventory, loans, receivables, payables, and investment progress from one month to the next. Prices, production targets, and recurring budgets repeat; new capital spending and corporate borrowing or repayment apply once, then reset to zero. Projections stop at the chosen horizon, year-end, or financial distress. They are expected scenarios, not guaranteed outcomes, and do not advance the campaign or replace actual results.
+
+## Learn from economics and monthly coaching
+
+**Decisions → Unit economics & break-even** and **Finance → Unit economics & break-even** show list price, manufacturer revenue, standard costs, warranty provision, unit contribution, and company break-even. Dealers pay the manufacturer 86% of the customer list price. A product's variable-cost floor does not cover the whole company's bills. The company break-even calculation holds the displayed prices, shipment mix, and costs constant; it does not promise sufficient demand or capacity. Allocated product full cost is an explicit teaching allocation. See the [unit-economics definitions](docs/unit-economics.md) for formulas and limitations.
+
+Every completed month displays a **Decision quality** score out of 100 and an A–F letter. Select **What worked, what to change** for the coaching detail. **Results** lets you reopen an earlier month's review or select its **Coach** link. Coaching separates the decision under the expected conditions available then from the realized outcome. It compares tested alternatives, shows what changed in their plans, and distinguishes the strongest expected plan from the strongest realized plan. **Best tested** is a bounded comparison, not a claim of a global optimum or the best possible campaign strategy. Reviews that cannot reproduce an imported history show that limitation instead of inventing a comparison.
+
+New cyclical campaigns start with a **Soft market**, **Flat market**, or **Upswing market** outlook. Public forecasts adapt to observed conditions; actual demand turns can persist, and suppliers can suffer disruptions. Completed months use observed market conditions while future months use the latest public outlook, so the estimated full-year market can change as the year unfolds. The [cycle model](docs/market-cycles.md) describes these synthetic scenarios. They are not calibrated forecasts of CNH or the equipment industry.
+
+The [learning guide](docs/learning-guide.md) connects these screens into a monthly planning routine and includes dated, sourced examples of equipment-industry cyclicality.
 
 ## Controls
 
@@ -57,9 +67,9 @@ Direct section and location buttons provide access without walking. Planning and
 
 Valid changes autosave in this browser's local storage. A game link does not share your campaign, and there is no cloud synchronization.
 
-Market and financial planning views are read-only additions. Existing valid campaigns remain compatible and do not need a restart or save migration.
+Existing valid campaigns retain their original market mechanics and can use unit economics and monthly coaching without a restart. Cyclical market mechanics apply to new campaigns; an older campaign is not silently converted.
 
-Use **Settings → Export save** to download a JSON backup, and **Import save** to restore it in another browser or on another device. Importing a valid save replaces the current campaign. **New campaign** also replaces local progress and lets you choose a scenario seed. Export first to retain the previous campaign. Invalid or unsupported saved data pauses automatic replacement until a valid import or deliberate restart.
+Use **Settings → Export save** to download a JSON backup, and **Import save** to restore it in another browser or on another device. Importing a valid save replaces the current campaign. **Settings → New campaign** also replaces local progress: choose **Random**, **Soft**, **Flat**, **Upswing**, or **Classic legacy** and a scenario seed. New campaigns default to a fresh random seed; **Repeat current scenario** copies the current seed and initial market outlook. Export first to retain the previous campaign. Invalid or unsupported saved data pauses automatic replacement until a valid import or deliberate restart.
 
 ## Current scope
 
@@ -74,6 +84,6 @@ npm test
 npm run check
 ```
 
-The tests cover simulation invariants, accounting reconciliation, deterministic forecasts and replay, campaign endings, and save validation and round trips. Analytics checks cover market sizing and share denominators, sequential financial projections, one-time commitments, and preservation of live campaign state. DOM integration tests exercise numerical edits, plan comparisons, market and financial planning views, monthly commitment, reports, statements, import recovery, and the missing-WebGL fallback. `npm run check` checks JavaScript syntax.
+The tests cover simulation invariants, accounting reconciliation, deterministic forecasts and replay, campaign endings, and save validation and round trips. Analytics checks cover market sizing and share denominators, sequential financial projections, one-time commitments, and preservation of live campaign state. Unit-economics checks cover contribution and break-even reconciliation, allocation assumptions, zero shipments, and cash-versus-profit distinctions. Coaching and cycle checks cover fair comparisons, forecast independence from future shocks, historical replay, and legacy compatibility. DOM integration tests exercise numerical edits, plan comparisons, market and financial planning views, monthly commitment, coaching, reports, statements, import recovery, and the missing-WebGL fallback. `npm run check` checks JavaScript syntax.
 
 Automated simulation and save-state checks have passed. Browser-render QA remains unverified; these checks do not establish visual correctness or frame rate on a desktop browser.

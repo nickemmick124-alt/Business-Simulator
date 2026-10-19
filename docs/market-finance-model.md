@@ -1,6 +1,6 @@
 # Market and financial planning model
 
-This read-only analytics layer adds market context and forward financial statements to the original twelve-month campaign. It does not change operating mechanics, saved-state fields, or `MODEL_VERSION`. All figures are illustrative game assumptions, not reported CNH figures, a valuation of CNH, or a real equipment-market forecast.
+This read-only analytics layer adds market context and forward financial statements to the twelve-month campaign. It reads the campaign's simulation version and never advances or converts a live campaign. Original `1.0.0` campaigns preserve their initial mechanics; new cyclical `1.1.0` campaigns use the [market-cycle model](market-cycles.md). All figures are illustrative game assumptions, not reported CNH figures, a valuation of CNH, or a real equipment-market forecast.
 
 ## Scope and units
 
@@ -12,9 +12,11 @@ Industry monthly units are calculated separately for each product family:
 round(baseDemand / referenceUnitShare * publicCategoryOutlook)
 ```
 
-The reference shares are tractors 20%, harvesters 18%, and loaders 16%. These assumptions scale the size of the opportunity; they do not establish the company's actual or expected share. The category outlook is the existing public agriculture or construction seasonal multiplier for each of months 1–12. Competitor pressure affects the company's demand but does not reduce the size of the industry market.
+The reference shares are tractors 20%, harvesters 18%, and loaders 16%. These assumptions scale the size of the opportunity; they do not establish the company's actual or expected share. In original `1.0.0` campaigns, the category outlook is the public agriculture or construction seasonal multiplier for each of months 1–12. In cyclical `1.1.0` campaigns, completed months use the observed category factors recorded in `report.marketContext.realized`; future months use the latest public outlook, which gradually returns observed deviations toward the initial scenario. Competitor pressure affects the company's demand but does not reduce the size of the industry market.
 
-Monthly market value is monthly industry units multiplied by a fixed reference retail price: $145,000 per tractor, $360,000 per harvester, and $195,000 per loader. Annual units and value sum all twelve modeled months; the annual figure does not multiply a seasonal peak month by twelve. Prices, production decisions, marketing, APR, and random event seeds never change this industry denominator. A change in the player's prices may change expected demand and sales, but cannot mechanically inflate the estimated industry value.
+Monthly market value is monthly industry units multiplied by a fixed reference retail price: $145,000 per tractor, $360,000 per harvester, and $195,000 per loader. Annual units and value sum all twelve modeled months; the annual figure does not multiply a seasonal peak month by twelve. For cyclical campaigns, that full-year estimate combines observed history with the remaining public forecast and can change as conditions become known. Prices, production decisions, marketing, and APR never change this industry denominator. A change in the player's prices may change expected demand and sales, but cannot mechanically inflate the estimated industry value.
+
+Original campaigns keep the seed-independent industry denominator. New cyclical campaigns can differ because of their initial public scenario and subsequently observed market shocks. Given the same public scenario and observations, changing the hidden random seed does not change future public market projections: forecasts never inspect future shock draws. The historical denominator uses observed industry conditions, not the player's company sales.
 
 ## Market share and change comparisons
 
@@ -30,7 +32,7 @@ Market month-over-month change compares next month's industry units with the las
 
 Current prices, production targets, recurring spending, overtime, component buffer, and financing APR continue unchanged across the projection. Corporate borrowing or repayment (`debtChange`) and factory capital spending (`capex`) apply **only in the first projected month**, then reset to zero. Other spending, including product engineering, recurs. These assumptions are visible in the API and should be visible beside projections.
 
-The requested horizon defaults to three months and must be an integer from one through twelve. The projection stops at its horizon, month 12, or modeled financial distress, whichever comes first. It never extrapolates into a thirteenth month. A completed or distressed campaign returns no future projection. These are expected scenarios, not probability ranges, commitments, or guaranteed results. Hidden future randomness is not read. Two otherwise identical states that differ only in their random seed produce identical projections.
+The requested horizon defaults to three months and must be an integer from one through twelve. The projection stops at its horizon, month 12, or modeled financial distress, whichever comes first. It never extrapolates into a thirteenth month. A completed or distressed campaign returns no future projection. These are expected scenarios, not probability ranges, commitments, or guaranteed results. Hidden future randomness is not read. Two otherwise identical states, including the same public market scenario and observations, that differ only in their random seed produce identical projections.
 
 For the first projected month, revenue, company retail-sales, and customer-demand changes use the latest actual report as their comparator. Later projection months use the preceding projected report. `comparison.kind` and `comparison.month` identify that basis. No company comparison is available before the campaign has an actual result.
 
@@ -78,4 +80,4 @@ Returns all keys from `balanceSheet(state)`, plus `operatingWorkingCapital`, `co
 - `stopReason`: `null` for a requested horizon ending before the campaign ends, `'year-end'` at month 12, `'distress'` for projected financial distress, or `'campaign-ended'` for an already-ended input campaign.
 - `warnings`: `{ id, severity, month, title, detail, action }` entries. `severity` is `'warning'` or `'danger'`.
 
-Neither result contains the live state or a reference to its history. Existing saves need no migration.
+Neither result contains the live state or a reference to its history. Existing saves need no migration; new cycles require a new campaign rather than conversion of historical results.

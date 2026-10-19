@@ -4,6 +4,9 @@
  * Money is in USD millions, except price controls (USD thousands). No IO.
  */
 export const MODEL_VERSION = '1.0.0';
+export const CYCLICAL_MODEL_VERSION = '1.1.0';
+const MARKET_REGIMES = ['soft', 'flat', 'upswing'];
+const REGIME_LABELS = { soft: 'Soft market', flat: 'Flat market', upswing: 'Upswing market' };
 export const PRODUCTS = Object.freeze([
   { id: 'tractor', name: 'Row-crop tractor', segment: 'Agriculture', basePrice: 145, capacity: 260, color: '#d74436', materialCost: 0.075, conversionCost: 0.013, baseDemand: 158 },
   { id: 'harvester', name: 'Combine harvester', segment: 'Agriculture', basePrice: 360, capacity: 95, color: '#e9bb49', materialCost: 0.192, conversionCost: 0.029, baseDemand: 57 },
@@ -65,8 +68,10 @@ export function balanceSheet(state) {
   };
 }
 
-export function createInitialState(seed = 4821) {
+export function createInitialState(seed = 4821, options = {}) {
   if (!Number.isInteger(seed) || seed < 0 || seed > 4294967295) throw new Error('Seed must be an unsigned 32-bit integer.');
+  if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Campaign options must be an object.');
+  if (options.marketRegime !== undefined && ![...MARKET_REGIMES, 'random'].includes(options.marketRegime)) throw new Error('Market regime must be soft, flat, upswing, or random.');
   const opening = {
     tractor: { finishedGoods: 62, dealerStock: 310, incomplete: 26, parts: 45, controllers: 9, rework: 7, installedBase: 4600 },
     harvester: { finishedGoods: 19, dealerStock: 112, incomplete: 11, parts: 16, controllers: 3, rework: 3, installedBase: 1750 },
@@ -87,7 +92,21 @@ export function createInitialState(seed = 4821) {
   state.equity = money(state.cash + state.receivables + state.fixedAssets + state.loanBook + state.inventoryValue - state.debt - state.payables - state.warrantyReserve);
   state.initialEquity = state.equity;
   state.initialAdjustedEquity = adjustedEquity(state);
+  // Older saves and the one-argument API retain their original exact mechanics.
+  // Resolve the initial public scenario once, rather than on every preview.
+  if (options.marketRegime !== undefined) {
+    const initialRegime = options.marketRegime === 'random' ? MARKET_REGIMES[Math.floor(random(seed, 0, 200) * MARKET_REGIMES.length)] : options.marketRegime;
+    state.version = CYCLICAL_MODEL_VERSION;
+    state.marketCycle = { initialRegime, observedMonth: 0, agricultureIndex: 1, constructionIndex: 1, supplyIndex: 1 };
+  }
   return state;
+}
+
+/** Reconstruct the exact starting rules and public scenario of a saved campaign. */
+export function createReplayInitialState(state) {
+  const checked = validateState(state);
+  if (!checked.valid) throw new Error(`Invalid simulation state: ${checked.errors.join(' ')}`);
+  return createInitialState(state.seed, state.version === CYCLICAL_MODEL_VERSION ? { marketRegime: state.marketCycle.initialRegime } : {});
 }
 
 export function defaultPlan(state = createInitialState()) {
@@ -122,8 +141,7 @@ export function validatePlan(plan, state) {
   return { valid: errors.length === 0, errors, plan: normalized };
 }
 
-/** Public monthly outlook, also used by the planning forecast. No future random draw. */
-export function getMarketOutlook(state) {
+function legacyMarketOutlook(state) {
   const month = Math.min(12, state.month + 1);
   const agriculturalSeason = [0.94, 0.98, 1.06, 1.12, 1.14, 1.04, 0.94, 1.03, 1.15, 1.1, 0.91, 0.85][month - 1];
   const constructionSeason = [0.92, 0.96, 1.05, 1.1, 1.12, 1.1, 1.06, 1.05, 1.02, 0.98, 0.92, 0.88][month - 1];
@@ -136,6 +154,111 @@ export function getMarketOutlook(state) {
     summary: month <= 2 ? 'Soft agricultural demand and a constrained controller supplier; construction remains resilient.'
       : month <= 6 ? 'Controller supply is recovering. Spring demand rewards a reliable dealer network.'
         : 'Competition is intensifying. Balance inventory and customer uptime as seasonal demand changes.',
+  };
+}
+
+// Factors are relative to the original public category seasonality. They are
+// synthetic scenarios, not estimates of historical industry growth.
+function scenarioIndex(regime, month) {
+  const agricultureIndex = regime === 'soft' ? 0.93 - Math.min(month, 6) * 0.015 + Math.max(0, month - 6) * 0.008
+    : regime === 'upswing' ? 1.04 + Math.min(month, 8) * 0.014 - Math.max(0, month - 8) * 0.003 : 1;
+  return { agricultureIndex, constructionIndex: 1 + (agricultureIndex - 1) * 0.65, supplyIndex: 1 };
+}
+
+function publicCycleIndex(state, month) {
+  const cycle = state.marketCycle;
+  const baseline = scenarioIndex(cycle.initialRegime, month);
+  if (!cycle.observedMonth) return baseline;
+  const distance = Math.max(0, month - cycle.observedMonth);
+  const previousBaseline = scenarioIndex(cycle.initialRegime, cycle.observedMonth);
+  return {
+    agricultureIndex: baseline.agricultureIndex * Math.pow(cycle.agricultureIndex / previousBaseline.agricultureIndex, Math.pow(0.82, distance)),
+    constructionIndex: baseline.constructionIndex * Math.pow(cycle.constructionIndex / previousBaseline.constructionIndex, Math.pow(0.82, distance)),
+    supplyIndex: 1 + (cycle.supplyIndex - 1) * Math.pow(0.45, distance),
+  };
+}
+
+function categoryFactors(month, indices) {
+  const base = legacyMarketOutlook({ month: month - 1 });
+  return {
+    agriculture: base.agriculture * indices.agricultureIndex,
+    construction: base.construction * indices.constructionIndex,
+    controllerSupply: base.controllerSupply * indices.supplyIndex,
+  };
+}
+
+function expectedCategoryFactors(state, month) {
+  // Completed months are observed. Future months use only the latest public
+  // observation and the declared scenario, never the campaign's hidden seed.
+  const observed = state.history?.[month - 1]?.marketContext?.realized;
+  return observed ? { ...observed } : categoryFactors(month, publicCycleIndex(state, month));
+}
+
+function industryUnits(factors) {
+  return Math.round(158 / 0.20 * factors.agriculture) + Math.round(57 / 0.18 * factors.agriculture) + Math.round(149 / 0.16 * factors.construction);
+}
+
+/** Public monthly outlook, also used by the planning forecast. No future random draw. */
+export function getMarketOutlook(state) {
+  const base = legacyMarketOutlook(state);
+  if (state.version !== CYCLICAL_MODEL_VERSION) return base;
+  const factors = expectedCategoryFactors(state, base.month);
+  const annual = sum(Array.from({ length: 12 }, (_, index) => industryUnits(expectedCategoryFactors(state, index + 1))));
+  const flatAnnual = sum(Array.from({ length: 12 }, (_, index) => industryUnits(categoryFactors(index + 1, scenarioIndex('flat', index + 1)))));
+  const expectedAnnualChange = annual / flatAnnual - 1;
+  const regime = expectedAnnualChange < -0.04 ? 'soft' : expectedAnnualChange > 0.04 ? 'upswing' : 'flat';
+  const prior = base.month > 1 ? expectedCategoryFactors(state, base.month - 1) : null;
+  const expectedMonthChange = prior ? industryUnits(factors) / industryUnits(prior) - 1 : null;
+  const cycleSummary = `${REGIME_LABELS[regime]}: full-year industry units are projected ${Math.abs(expectedAnnualChange * 100).toFixed(1)}% ${expectedAnnualChange < 0 ? 'below' : 'above'} the flat-scenario reference. The outlook updates with observed conditions; recoveries and downturns can persist for several months.`;
+  return {
+    ...base, ...factors, regime, regimeLabel: REGIME_LABELS[regime], initialRegime: state.marketCycle.initialRegime,
+    cycleSummary, expectedAnnualChange, expectedMonthChange,
+    summary: `${cycleSummary} ${base.summary}`,
+  };
+}
+
+function realizedCycleIndex(state, month) {
+  // Rebuild the exogenous path independently of operating decisions. Comparing
+  // alternate plans therefore exposes them to exactly the same month's shocks.
+  let momentum = 0, supplyDeviation = 0, indices, demandPulse = 0, supplierShock = false;
+  for (let current = 1; current <= month; current += 1) {
+    const turn = random(state.seed, current, 102);
+    demandPulse = turn < 0.075 ? -0.15 - random(state.seed, current, 103) * 0.08
+      : turn > 0.925 ? 0.12 + random(state.seed, current, 103) * 0.07 : 0;
+    momentum = clamp(momentum * 0.82 + (random(state.seed, current, 101) - 0.5) * 0.07 + demandPulse, -0.35, 0.35);
+    supplierShock = random(state.seed, current, 105) < 0.12;
+    supplyDeviation = clamp(supplyDeviation * 0.45 - (supplierShock ? 0.18 + random(state.seed, current, 106) * 0.08 : 0), -0.45, 0);
+    const baseline = scenarioIndex(state.marketCycle.initialRegime, current);
+    indices = {
+      agricultureIndex: baseline.agricultureIndex * (1 + momentum),
+      constructionIndex: baseline.constructionIndex * (1 + momentum * 0.75 + (random(state.seed, current, 104) - 0.5) * 0.025),
+      supplyIndex: 1 + supplyDeviation,
+    };
+  }
+  return { indices, demandPulse, supplierShock };
+}
+
+function resolveMarket(state, outlook, isForecast) {
+  if (state.version !== CYCLICAL_MODEL_VERSION) return null;
+  const expected = { agriculture: outlook.agriculture, construction: outlook.construction, controllerSupply: outlook.controllerSupply };
+  const draw = isForecast ? { indices: publicCycleIndex(state, outlook.month), demandPulse: 0, supplierShock: false } : realizedCycleIndex(state, outlook.month);
+  const realized = isForecast ? { ...expected } : categoryFactors(outlook.month, draw.indices);
+  const demandSurprise = industryUnits(realized) / industryUnits(expected) - 1;
+  const supplySurprise = realized.controllerSupply / expected.controllerSupply - 1;
+  const events = [];
+  if (draw.demandPulse) events.push({
+    id: `cycle-demand-${outlook.month}`, title: draw.demandPulse < 0 ? 'Equipment buyers defer replacement' : 'Replacement demand accelerates',
+    detail: `A broad change in customer confidence moved industry demand ${Math.abs(demandSurprise * 100).toFixed(1)}% ${demandSurprise < 0 ? 'below' : 'above'} the opening forecast. Dealers adjust replenishment; the change can carry into later months.`,
+    type: draw.demandPulse < 0 ? 'warning' : 'positive', location: 'headquarters',
+  });
+  if (draw.supplierShock) events.push({
+    id: `cycle-supply-${outlook.month}`, title: 'Controller supplier disruption',
+    detail: `An unexpected upstream disruption left industry controller availability ${Math.abs(supplySurprise * 100).toFixed(1)}% below the opening outlook. Existing component stock and supplier development help protect production; recovery takes time.`,
+    type: 'warning', location: 'factory',
+  });
+  return {
+    indices: draw.indices,
+    context: { isForecast, regime: outlook.regime, regimeLabel: outlook.regimeLabel, initialRegime: state.marketCycle.initialRegime, expected, realized, demandSurprise, supplySurprise, events },
   };
 }
 
@@ -152,8 +275,9 @@ function resolve(inputState, inputPlan, isForecast) {
   const month = state.month + 1;
   const opening = balanceSheet(state);
   const outlook = getMarketOutlook(state);
+  const resolvedMarket = resolveMarket(state, outlook, isForecast);
   const productReports = [];
-  const events = [];
+  const events = resolvedMarket ? copy(resolvedMarket.context.events) : [];
   const actualVariation = channel => isForecast ? 0.5 : random(state.seed, month, channel);
   let procurement = 0, conversion = 0, wholesaleRevenue = 0, cogs = 0, newLending = 0;
   let overtimeExpense = 0, reworkExpense = 0, warrantyAccrual = 0, warrantyClaims = 0;
@@ -185,7 +309,8 @@ function resolve(inputState, inputPlan, isForecast) {
     s.technology = clamp(s.technology + completedEngineering * 0.007 - 0.0025, 0.82, 1.25);
     s.quality = clamp(s.quality + plan.quality * 0.0025 + plan.training * 0.0015 - 0.0032 - plan.overtime * 0.00018, 0.84, 0.992);
     const capacity = Math.floor(p.capacity * s.condition * (0.9 + s.skill * 0.1) * (1 + state.capacityBonus) * (1 + plan.overtime * 0.0065));
-    const supplyRate = clamp(outlook.controllerSupply * (0.88 + actualVariation(20 + index) * 0.24) + plan.quality * 0.004, 0.45, 1);
+    const marketSupply = resolvedMarket ? resolvedMarket.context.realized.controllerSupply : outlook.controllerSupply;
+    const supplyRate = clamp(marketSupply * (0.88 + actualVariation(20 + index) * 0.24) + plan.quality * 0.004, 0.45, 1);
     const kitOrder = Math.max(0, Math.ceil(target * (1 + plan.partsBuffer / 100)) - s.parts - s.incomplete);
     const controllerOrder = Math.max(0, Math.ceil(target * (1 + plan.partsBuffer / 100)) - s.controllers);
     const kitReceipts = Math.min(kitOrder, Math.floor(p.capacity * 1.25));
@@ -220,8 +345,10 @@ function resolve(inputState, inputPlan, isForecast) {
     const marketingResponse = 0.88 + 0.15 * Math.log1p(plan.marketing);
     const financingResponse = clamp(1 + (7.25 - plan.financingApr) * 0.012, 0.9, 1.08);
     const expectedDemand = Math.max(0, Math.round(p.baseDemand * market * priceResponse * marketingResponse * financingResponse * s.reputation * s.technology * outlook.competitorPressure));
-    const demand = Math.max(0, Math.round(expectedDemand * (0.91 + actualVariation(10 + index) * 0.18)));
-    const dealerOrders = Math.max(0, Math.round(expectedDemand * 2.45) - s.dealerStock);
+    const actualMarket = resolvedMarket ? (p.segment === 'Agriculture' ? resolvedMarket.context.realized.agriculture : resolvedMarket.context.realized.construction) : market;
+    const orderDemand = resolvedMarket ? Math.max(0, Math.round(expectedDemand * actualMarket / market)) : expectedDemand;
+    const demand = Math.max(0, Math.round(orderDemand * (0.91 + actualVariation(10 + index) * 0.18)));
+    const dealerOrders = Math.max(0, Math.round(orderDemand * 2.45) - s.dealerStock);
     const deliveries = Math.min(s.finishedGoods, dealerOrders);
     s.finishedGoods -= deliveries;
     s.dealerStock += deliveries;
@@ -310,6 +437,7 @@ function resolve(inputState, inputPlan, isForecast) {
   state.inventoryValue = inventoryValue(state.products);
   state.equity = money(inputState.equity + profit);
   state.month = month;
+  if (resolvedMarket) state.marketCycle = { initialRegime: state.marketCycle.initialRegime, observedMonth: month, ...resolvedMarket.indices };
   // Negative cash is a visible emergency overdraft, not silently forgiven debt.
   // It is kept in cash and included in all balances and ending scores.
   if (state.cash < 0) events.push({ id: `liquidity-${month}`, title: 'Liquidity emergency', detail: `Cash is $${state.cash.toFixed(1)}m. Restore liquidity through working capital, spending choices or available corporate borrowing. Two consecutive negative-cash months end the mandate.`, type: 'danger', location: 'headquarters' });
@@ -368,6 +496,7 @@ function resolve(inputState, inputPlan, isForecast) {
     ],
     reconciliation: { balanceSheet: bs.reconciliation, inventory: money(state.inventoryValue - inputState.inventoryValue - procurement - conversion + cogs), cash: money(state.cash - inputState.cash - cashChange), loanBook: money(state.loanBook - loanOpening - newLending + loanPrincipalCollections + creditLosses) },
   };
+  if (resolvedMarket) report.marketContext = resolvedMarket.context;
   if (!events.length) events.push({ id: `steady-${month}`, title: 'Operations are on plan', detail: 'Review demand, cash conversion and inventory before increasing production.', type: 'info', location: 'headquarters' });
   state.history.push(copy(report));
   return { state, report };
@@ -425,6 +554,17 @@ const FINANCING_KEYS = ['openingLoanBook', 'newLending', 'principalCollections',
 const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 const validText = value => typeof value === 'string' && value.length <= 8192;
 
+function validateMarketContext(context, label, errors) {
+  if (!isRecord(context)) { errors.push(`${label} market context is missing.`); return; }
+  if (typeof context.isForecast !== 'boolean' || !MARKET_REGIMES.includes(context.regime) || !MARKET_REGIMES.includes(context.initialRegime) || !validText(context.regimeLabel)) errors.push(`${label} market scenario is invalid.`);
+  for (const key of ['expected', 'realized']) {
+    const factors = context[key];
+    if (!isRecord(factors) || ['agriculture', 'construction', 'controllerSupply'].some(field => !finite(factors[field]) || factors[field] <= 0 || factors[field] > 3)) errors.push(`${label} ${key} market factors must be positive finite numbers.`);
+  }
+  for (const key of ['demandSurprise', 'supplySurprise']) if (!finite(context[key]) || context[key] < -1 || context[key] > 5) errors.push(`${label} ${key} must be a finite rate.`);
+  if (!Array.isArray(context.events) || context.events.length > 8 || context.events.some(event => !isRecord(event) || ['id', 'title', 'detail', 'type', 'location'].some(key => !validText(event[key])))) errors.push(`${label} market events must contain the required text fields.`);
+}
+
 function validateReport(report, index, errors) {
   const label = `Report ${index + 1}`;
   if (!isRecord(report) || report.month !== index + 1) {
@@ -465,12 +605,13 @@ function validateReport(report, index, errors) {
   else if (report.events.some(event => !isRecord(event) || ['id', 'title', 'detail', 'type', 'location'].some(key => !validText(event[key])))) errors.push(`${label} events must contain the required text fields.`);
   if (!Array.isArray(report.drivers) || report.drivers.length > 64) errors.push(`${label} cash drivers must be a bounded array.`);
   else if (report.drivers.some(driver => !isRecord(driver) || !finite(driver.value) || !validText(driver.label) || !validText(driver.detail))) errors.push(`${label} cash drivers must contain a finite value and text descriptions.`);
+  if (Object.hasOwn(report, 'marketContext')) validateMarketContext(report.marketContext, label, errors);
 }
 
 export function validateState(state) {
   const errors = [];
   if (!state || typeof state !== 'object' || Array.isArray(state)) return { valid: false, errors: ['State must be an object.'] };
-  if (state.version !== MODEL_VERSION) errors.push('Unsupported save version.');
+  if (![MODEL_VERSION, CYCLICAL_MODEL_VERSION].includes(state.version)) errors.push('Unsupported save version.');
   if (!Number.isInteger(state.seed) || state.seed < 0 || state.seed > 4294967295) errors.push('Invalid seed.');
   if (!Number.isInteger(state.month) || state.month < 0 || state.month > 12) errors.push('Month must be 0–12.');
   for (const key of ['cash', 'debt', 'corporateDebt', 'financeDebt', 'equity', 'receivables', 'payables', 'fixedAssets', 'loanBook', 'warrantyReserve', 'inventoryValue', 'initialEquity', 'initialAdjustedEquity', 'capacityBonus']) {
@@ -491,6 +632,18 @@ export function validateState(state) {
   }
   if (!Array.isArray(state.history) || state.history.length !== state.month || state.history.length > 12) errors.push('History must contain one report per completed month, up to twelve.');
   else for (let i = 0; i < state.history.length; i += 1) validateReport(state.history[i], i, errors);
+  if (state.version === CYCLICAL_MODEL_VERSION) {
+    const cycle = state.marketCycle;
+    if (!isRecord(cycle) || !MARKET_REGIMES.includes(cycle.initialRegime) || cycle.observedMonth !== state.month || ['agricultureIndex', 'constructionIndex', 'supplyIndex'].some(key => !finite(cycle[key]) || cycle[key] < 0.3 || cycle[key] > 2)) errors.push('Cyclical campaigns require a valid observed market state.');
+    else if (Array.isArray(state.history)) {
+      for (const [index, report] of state.history.entries()) if (!isRecord(report?.marketContext) || report.marketContext.initialRegime !== cycle.initialRegime) errors.push(`Report ${index + 1} is missing the campaign market context.`);
+      const last = state.history.at(-1)?.marketContext?.realized;
+      if (last) {
+        const factors = categoryFactors(state.month, cycle);
+        if (['agriculture', 'construction', 'controllerSupply'].some(key => !finite(last[key]) || Math.abs(factors[key] - last[key]) > 1e-9)) errors.push('Observed cycle does not reconcile to the latest market report.');
+      } else if (state.month === 0 && ['agricultureIndex', 'constructionIndex', 'supplyIndex'].some(key => cycle[key] !== 1)) errors.push('A new market scenario cannot contain unobserved cycle results.');
+    }
+  }
   for (const key of ['rdPipeline', 'capexPipeline']) {
     if (!Array.isArray(state[key])) errors.push(`${key} must be an array.`);
     else for (const project of state[key]) if (!project || !finite(project.amount) || project.amount < 0 || !Number.isInteger(project.remaining) || project.remaining < 1 || project.remaining > 3) errors.push(`Invalid ${key} project.`);
