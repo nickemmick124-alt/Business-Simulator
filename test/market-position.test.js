@@ -240,3 +240,40 @@ test('diagnostics do not mutate state or decisions and never read hidden future 
   assert.deepEqual({ state, plan }, before);
   assert.throws(() => getMarketPosition({ ...clone(state), month: 13 }, plan), /Invalid simulation state/);
 });
+
+test('executive demand decomposition includes dealer service, difficulty and rival progress exactly once', () => {
+  for (const difficulty of ['easy', 'medium', 'difficult']) {
+    let state = createInitialState(4821, { difficulty, marketRegime: 'flat', campaignMonths: 36 });
+    for (let month = 0; month < 3; month += 1) state = advanceMonth(state, { ...defaultPlan(state), rd: 6, dealerSupport: 2 }).state;
+    const plan = { ...defaultPlan(state), dealerSupport: 2.5, supplierSupport: 1.5, tractorPrice: 152 };
+    const before = clone({ state, plan });
+    const projected = forecast(state, plan);
+    const position = getMarketPosition(state, plan);
+    for (const product of position.products) {
+      const factors = product.perception.next.demandFactors;
+      close(factors.dealerService, 1 + Math.log1p(plan.dealerSupport) * 0.045);
+      close(factors.difficulty, { easy: 1.04, medium: 0.97, difficult: 0.90 }[difficulty]);
+      assert.ok(factors.rivals < 1 && factors.rivals > 0.82);
+      assert.equal(factors.reputation, state.products[product.id].reputation);
+      assert.equal(factors.technology, projected.state.products[product.id].technology);
+      assert.equal(Math.round(factors.unroundedDemand), projected.report.products.find(row => row.id === product.id).expectedDemand);
+      assert.match(product.perception.explanation.join(' '), /technology is counted once/);
+    }
+    assert.match(position.caveats.join(' '), /not observed rival sales/);
+    assert.deepEqual({ state, plan }, before);
+    assert.deepEqual(getMarketPosition({ ...state, seed: 1772 }, plan), position, 'no demand explanation can reveal future random draws');
+  }
+});
+
+test('legacy demand-factor shapes remain exact when executive campaign levers are absent', () => {
+  for (const options of [{}, { marketRegime: 'flat' }, { marketRegime: 'flat', campaignMonths: 36 }]) {
+    const state = createInitialState(4821, options);
+    const position = getMarketPosition(state, defaultPlan(state));
+    for (const product of position.products) {
+      assert.equal(Object.hasOwn(product.perception.next.demandFactors, 'dealerService'), false);
+      assert.equal(Object.hasOwn(product.perception.next.demandFactors, 'difficulty'), false);
+      assert.equal(Object.hasOwn(product.perception.next.demandFactors, 'rivals'), false);
+      assert.equal(Math.round(product.perception.next.demandFactors.unroundedDemand), product.perception.next.demandFactors.expectedDemand);
+    }
+  }
+});

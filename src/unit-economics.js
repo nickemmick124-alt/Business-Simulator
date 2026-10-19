@@ -91,7 +91,7 @@ function reportEconomics(report, warrantyRates = {}) {
       reconciliationM: contributionM - commonCostsM + income.loanInterestIncome - income.interestExpense - income.pretaxProfit,
       costBreakdown: [
         { label: 'Factory and corporate base expense', valueM: income.fixedFactoryExpense + income.corporateExpense },
-        { label: 'Chosen operating and engineering budgets', valueM: income.marketing + income.quality + income.maintenance + income.training + income.rd },
+        { label: 'Chosen operating and engineering budgets', valueM: income.marketing + income.quality + income.maintenance + income.training + income.rd + (income.supplierSupport || 0) + (income.dealerSupport || 0) },
         { label: 'Overtime, rework and inventory carrying', valueM: income.overtimeExpense + income.reworkExpense + income.inventoryCarryingExpense },
         { label: 'Depreciation', valueM: income.depreciation },
         { label: 'Unreserved warranty claims and credit losses', valueM: income.warrantyShortfall + income.creditLosses },

@@ -89,7 +89,7 @@ export function getBoardMandate(state) {
   const horizonMonths = campaignLength(state);
   // The UI marks only newly started campaigns. Existing saves are never tagged
   // on load, so introducing goals cannot imply that older players saw them.
-  const retrospective = state.version !== '1.2.0' && state.boardMandateVersion !== '1.0.0';
+  const retrospective = !['1.2.0', '1.3.0'].includes(state.version) && state.boardMandateVersion !== '1.0.0';
   const monthlyGoals = Array.from({ length: horizonMonths }, (_, index) => monthGoal(index + 1, profile));
   return {
     available: true, regime, title: profile.title, directive: profile.directive, horizonMonths, retrospective,
@@ -253,7 +253,11 @@ function reviewFor(ending, initial, mandate, startMonth = ending.month, kind = '
     .map(component => ({ id: component.id, title: component.label, detail: ACTIONS[component.id], status: component.status }));
   if (!priorities.length) priorities.push({ id: 'resilience', title: 'Protect the lead', detail: 'Stress-test the next plan against weaker demand and a supplier disruption before using the remaining cash cushion.', status: 'Meeting' });
   const quarterly = startMonth !== month || month % 3 === 0;
-  const message = assessment.status === 'Beating' ? 'The business is ahead of the mandate. Sustain profitable delivery and protect liquidity before committing the next investment.'
+  const message = ending.status === 'dismissed'
+    ? kind === 'forecast'
+      ? 'This plan is projected to reach the dismissal threshold. Review the failed employment guardrails before committing; this forecast has not added any actual strikes.'
+      : 'The board has ended your tenure after repeated operating failures. This final score records the business outcome; use the monthly history to identify where a different plan could have protected the mandate.'
+    : assessment.status === 'Beating' ? 'The business is ahead of the mandate. Sustain profitable delivery and protect liquidity before committing the next investment.'
     : assessment.status === 'Meeting' ? 'The business is broadly meeting the mandate. Address the gaps below; meeting the plan is a solid result, while an A requires sustained stretch performance.'
       : 'The business is behind the mandate. Focus the next plan on the largest missed objectives and protect cash before adding commitments.';
   return {
@@ -273,6 +277,9 @@ function reviewFor(ending, initial, mandate, startMonth = ending.month, kind = '
 // Do not fabricate historical lessons from structurally valid but edited reports.
 const narrativeKeys = new Set(['title', 'detail', 'explanation', 'summary', 'name', 'segment', 'label', 'cycleSummary', 'regimeLabel']);
 function matches(saved, generated, key = '') {
+  // Consultations record what the CEO read, not a change to the company's
+  // financial position. Engine validation separately checks this journal.
+  if (key === 'ceoJournal') return true;
   if (narrativeKeys.has(key)) return true;
   if (typeof generated === 'number') return typeof saved === 'number' && Number.isFinite(saved) && Math.abs(saved - generated) < 1e-7;
   if (generated === null || typeof generated !== 'object') return saved === generated;

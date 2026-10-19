@@ -10,6 +10,8 @@ import { getMarketPosition } from '../src/market-position.js';
 import { getFactoryDiagnostics, getCostLedger } from '../src/factory-diagnostics.js';
 import { getFinancingInsights, getMonthlyBalanceSheet } from '../src/financial-learning.js';
 import { getBoardDashboard, getBoardReview } from '../src/board-mandate.js';
+import { ADVISORS, getConsultedAdvisorIds } from '../src/executive-intelligence.js';
+import { getStrategyAdviser } from '../src/strategy-adviser.js';
 import { STORAGE_KEY, exportSave, parseSave } from '../src/persistence.js';
 
 // In-process DOM integration only. This exercises the real application/model and
@@ -186,12 +188,117 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.match($('#command-panel').textContent, /A new season/);
     assert.equal($$('#main-nav [data-tab]').length, 6);
     assert.equal(saved().state.month, 0);
-    assert.equal(saved().state.version, '1.2.0', 'new campaigns should use the three-year model');
+    assert.equal(saved().state.version, '1.3.0', 'new campaigns should use the executive challenge model');
+    assert.equal(saved().state.difficulty, 'medium');
     assert.equal(saved().state.campaignMonths, 36);
     assert.ok(saved().drafts.length >= 2, 'the opening campaign should offer meaningful plan alternatives');
     assert.match($('#save-indicator').textContent, /Saved on this device/);
     assert.ok($('#world .fallback-world'), 'missing-WebGL fallback should preserve business controls');
     assert.ok(diagnostics.some((message) => /3D world initialization failed/.test(message)));
+  });
+
+  await t.test('monthly conversations reveal actionable briefings, persist visits and unlock explicitly applied strategies', async () => {
+    const original = saved();
+    const fixture = createInitialState(4821, { marketRegime: 'flat', campaignMonths: 36, difficulty: 'medium' });
+    await restoreCampaign(fixture);
+    click('[data-tab="briefing"]');
+    const beforeVisits = saved();
+    const locked = getStrategyAdviser(beforeVisits.state, beforeVisits.plan);
+    click('[data-action="executive-team"]');
+    assert.equal($$('[data-advisor]').length, 6);
+    assert.match($('#modal-content').textContent, /Headquarters/);
+    assert.match($('#modal-content').textContent, /Factory floor/);
+    click('[data-find-advisor="cfo"]');
+    assert.ok($('[data-advisor-meeting="cfo"]'), 'the missing-WebGL fallback must offer the same consultation');
+    assert.deepEqual(getConsultedAdvisorIds(saved().state), ['cfo']);
+    assert.match($('#modal-content').textContent, /break.even|Interest on new customer loans/);
+    assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+    for (const advisor of ADVISORS.filter(person => person.id !== 'cfo')) {
+      click('[data-action="executive-team"]');
+      click(`[data-meet-advisor="${advisor.id}"]`);
+      assert.ok($(`[data-advisor-meeting="${advisor.id}"]`));
+      assert.ok($('[data-advisor-lever]'), 'every conversation must connect findings to an operating decision');
+      assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+    }
+    const informed = saved();
+    assert.equal(getConsultedAdvisorIds(informed.state).length, 6);
+    assert.deepEqual(informed.plan, beforeVisits.plan, 'consulting a colleague must not change the operating numbers');
+    assert.equal(informed.state.month, 0, 'consultations must not advance the campaign');
+    assert.deepEqual(informed.state.employment, beforeVisits.state.employment, 'attendance must not earn board forgiveness');
+    const unlocked = getStrategyAdviser(informed.state, informed.plan);
+    assert.ok(unlocked.candidates.length > locked.candidates.length);
+    click('[data-action="strategy-adviser"]');
+    assert.ok($('[data-strategy-adviser="current"]'));
+    assert.equal($$('[data-strategy-row]').length, unlocked.candidates.length);
+    assert.match($('#modal-content').textContent, /not a global optimum|not a guaranteed/i);
+    click('[data-strategy-objective="growth"]');
+    assert.equal($('[data-strategy-objective="growth"]').getAttribute('aria-pressed'), 'true');
+    assert.deepEqual(saved().plan, informed.plan, 'changing comparison priority is not authorization to apply a plan');
+    const growth = getStrategyAdviser(informed.state, informed.plan, { objective: 'growth' });
+    const candidate = growth.candidates.find(item => item.canApply && item.changes.length);
+    assert.ok(candidate);
+    click(`[data-strategy-apply="${candidate.id}"]`);
+    assert.equal(dialog.open, false);
+    assert.deepEqual(saved().state, informed.state);
+    assert.deepEqual(saved().plan, candidate.plan);
+    click('[data-action="commit-preview"]');
+    assert.match($('[data-consultation-warning]').textContent, /team has been heard/);
+    click('[data-action="commit"]');
+    await waitFor(() => saved().state.month === 1 && !document.body.classList.contains('resolving'), 'consulted month did not commit');
+    const after = saved();
+    assert.deepEqual(getConsultedAdvisorIds(after.state), [], 'a new month needs fresh conversations');
+    assert.equal(getConsultedAdvisorIds(after.state, 1).length, 6, 'completed consultation history must remain recorded');
+    assert.ok($('[data-employment-status]'));
+    assert.ok($('[data-board-summary]'), 'consultations must not invalidate historical board replay');
+    click('[data-action="close-modal"]');
+    await restoreCampaign(after.state, after.plan);
+    assert.equal(getConsultedAdvisorIds(saved().state, 1).length, 6, 'export/import must retain the consultation record');
+    click('[data-tab="briefing"]');
+    assert.match($('[data-consultation-count]').textContent, /0 \/ 6/);
+    click('[data-action="strategy-adviser"]');
+    click('[data-strategy-history="1"]');
+    assert.ok($('[data-strategy-adviser="historical"]'));
+    assert.equal($$('[data-strategy-apply]').length, 0, 'historical advice must not overwrite the next month');
+    assert.match($('#modal-content').textContent, /6\/6 colleagues consulted/);
+    click('[data-action="close-modal"]');
+    await restoreCampaign(original.state, original.plan);
+    click('[data-tab="briefing"]');
+  });
+
+  await t.test('competitor comparisons are accessible and separate fictional benchmarks from actual share', () => {
+    const before = saved();
+    click('[data-tab="markets"]');
+    click('[data-action="competitors"]');
+    assert.ok($('[data-competitors]'));
+    assert.equal($$('[data-competitor-table] tbody tr').length, 4);
+    assert.match($('#modal-content').textContent, /fictional competitors/i);
+    assert.match($('#modal-content').textContent, /Estimated allocation/);
+    assert.match($('#modal-content').textContent, /Technology index/);
+    assert.doesNotMatch($('#modal-content').textContent, /NaN|Infinity|undefined/);
+    assert.deepEqual(saved().state, before.state);
+    assert.deepEqual(saved().plan, before.plan);
+    click('[data-action="close-modal"]');
+    click('[data-tab="briefing"]');
+  });
+
+  await t.test('new supplier and dealer levers save their costs and recompute the working forecast before commitment', async () => {
+    const original = saved();
+    click('[data-tab="plan"]');
+    click('[data-plan-group="Commercial"]');
+    assert.ok($('#field-dealerSupport'));
+    edit('#field-dealerSupport', 0.8);
+    assert.equal(saved().plan.dealerSupport, 0.8);
+    click('[data-plan-group="Operations"]');
+    assert.ok($('#field-supplierSupport'));
+    edit('#field-supplierSupport', 0.6);
+    assert.equal(saved().plan.supplierSupport, 0.6);
+    const expected = forecast(saved().state, saved().plan);
+    assert.equal(expected.report.income.dealerSupport, 0.8);
+    assert.equal(expected.report.income.supplierSupport, 0.6);
+    assert.equal($('#forecast-panel .forecast-grid strong').textContent, money(expected.state.cash));
+    assert.deepEqual(saved().state, original.state, 'commercial and supplier support are pending decisions until commitment');
+    await restoreCampaign(original.state, original.plan);
+    click('[data-tab="briefing"]');
   });
 
   await t.test('opening market intelligence distinguishes the addressable market from unobserved company share', () => {
@@ -402,12 +509,12 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
   await t.test('numerical edits recompute the forecast without advancing; invalid inputs block commitment', () => {
     click('[data-tab="briefing"]');
     click('[data-action="open-plan"]');
-    const initialProjection = $('#forecast-panel').textContent;
+    const initialDemand = forecast(saved().state, saved().plan).report.products.find(product => product.id === 'tractor').expectedDemand;
     edit('#field-tractorPrice', 160);
-    assert.notEqual($('#forecast-panel').textContent, initialProjection);
     assert.equal(saved().plan.tractorPrice, 160);
     assert.equal(saved().state.month, 0);
     const expected = forecast(saved().state, saved().plan);
+    assert.notEqual(expected.report.products.find(product => product.id === 'tractor').expectedDemand, initialDemand);
     assert.equal($('#forecast-panel .forecast-grid strong').textContent, money(expected.state.cash));
     click('#forecast-panel [data-action="financial-plan"]');
     assert.equal(balanceValue('cash', 2), money(expected.state.cash));
@@ -744,16 +851,22 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     verifyBoardReview(januaryBoardReview, $('[data-board-summary="1"]'));
   });
 
-  await t.test('completed and distressed campaigns retain financial visibility without inventing another round', async () => {
+  await t.test('completed, distressed and dismissed campaigns retain financial visibility without inventing another round', async () => {
     click('[data-action="close-modal"]');
-    for (const status of ['completed', 'distressed']) {
-      let terminal = createInitialState(status === 'distressed' ? 41 : 4821);
+    for (const status of ['completed', 'distressed', 'dismissed']) {
+      let terminal = status === 'dismissed'
+        ? createInitialState(4821, { marketRegime: 'flat', campaignMonths: 36, difficulty: 'difficult' })
+        : createInitialState(status === 'distressed' ? 41 : 4821);
       while (terminal.status === 'active') {
         const decisions = defaultPlan(terminal);
         if (status === 'distressed') {
           for (const field of PLAN_FIELDS) decisions[field.key] = field.max;
           decisions.debtChange = 0;
         }
+        if (status === 'dismissed') Object.assign(decisions, {
+          tractorProduction: 0, harvesterProduction: 0, loaderProduction: 0,
+          marketing: 0, quality: 0, maintenance: 0, training: 0, rd: 0,
+        });
         terminal = advanceMonth(terminal, decisions).state;
       }
       assert.equal(terminal.status, status);
@@ -796,7 +909,51 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
         }
         click('[data-action="close-modal"]');
       }
+      if (status === 'dismissed') {
+        click('[data-tab="briefing"]');
+        assert.ok($('[data-employment-status="dismissed"]'));
+        assert.match($('#command-panel').textContent, /dismissed|ended your tenure/i);
+        assert.equal($('#command-panel [data-action="commit-preview"]'), null);
+        click('[data-tab="plan"]');
+        assert.equal($('#command-panel [data-action="commit-preview"]'), null);
+        click('[data-action="outcome"]');
+        assert.ok($('#modal-content [data-employment-status="dismissed"]'));
+        assert.match($('#modal-content').textContent, /ended your tenure/);
+        assert.equal($$('#modal-content [data-board-kind="forecast"]').length, 0);
+        assert.deepEqual(saved().state, terminal);
+        click('[data-action="close-modal"]');
+      }
     }
+  });
+
+  await t.test('easy and difficult campaign choices persist and repeat without rewriting an existing save', async () => {
+    const original = saved();
+    for (const difficulty of ['easy', 'difficult']) {
+      click('[data-action="settings"]');
+      click('[data-action="restart"]');
+      assert.deepEqual(new Set([...$('#new-difficulty').options].map(option => option.value)), new Set(['medium', 'easy', 'difficult']));
+      const before = saved();
+      edit('#new-difficulty', difficulty);
+      edit('#new-campaign-length', '12');
+      edit('#new-market-regime', 'flat');
+      edit('#new-seed', 4821);
+      assert.deepEqual(saved(), before, 'selecting difficulty is only a pending setup change');
+      click('[data-action="confirm-restart"]');
+      const campaign = saved();
+      assert.equal(campaign.state.version, '1.3.0');
+      assert.equal(campaign.state.difficulty, difficulty);
+      assert.equal(campaign.state.campaignMonths, 12);
+      assert.ok($('[data-employment-status="secure"]'));
+      click('[data-action="settings"]');
+      click('[data-action="restart"]');
+      click('[data-action="repeat-scenario"]');
+      assert.equal($('#new-difficulty').value, difficulty);
+      assert.equal($('#new-campaign-length').value, '12');
+      assert.equal($('#new-market-regime').value, 'flat');
+      click('[data-action="confirm-restart"]');
+      assert.deepEqual(saved().state, campaign.state);
+    }
+    await restoreCampaign(original.state, original.plan);
   });
 
   await t.test('new campaigns offer fresh seeds and explicit market regimes without changing a save until confirmation', () => {
@@ -827,7 +984,8 @@ test('CEO controls integrate with forecasts, commits, reports, and campaign save
     assert.equal(soft.state.seed, 98765);
     assert.equal(soft.state.month, 0);
     assert.equal(soft.state.campaignMonths, 36);
-    assert.equal(soft.state.version, '1.2.0');
+    assert.equal(soft.state.version, '1.3.0');
+    assert.equal(soft.state.difficulty, 'medium');
     assert.equal(soft.state.marketCycle.initialRegime, 'soft');
     assert.equal(soft.state.history.length, 0);
     click('[data-tab="markets"]');

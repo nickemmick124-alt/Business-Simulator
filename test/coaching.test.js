@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PRODUCTS, PLAN_FIELDS, createInitialState, defaultPlan, advanceMonth, forecast, validatePlan, validateState } from '../src/simulation.js';
-import { COACHING_METHODOLOGY_VERSION, getMonthlyCoaching, getPlanCoaching } from '../src/coaching.js';
+import { LEGACY_COACHING_METHODOLOGY_VERSION, getMonthlyCoaching, getPlanCoaching } from '../src/coaching.js';
 
 const clone = value => JSON.parse(JSON.stringify(value));
 const completeMonth = (state, plan = defaultPlan(state)) => advanceMonth(state, plan).state;
@@ -209,8 +209,8 @@ test('historical grades disclose the current rubric without modifying saved fina
   const state = completeMonth(createInitialState(17, { marketRegime: 'soft' }));
   const before = JSON.stringify(state);
   const review = getMonthlyCoaching(state);
-  assert.equal(review.methodologyVersion, COACHING_METHODOLOGY_VERSION);
-  assert.equal(getPlanCoaching(createInitialState(), defaultPlan(createInitialState())).methodologyVersion, COACHING_METHODOLOGY_VERSION);
+  assert.equal(review.methodologyVersion, LEGACY_COACHING_METHODOLOGY_VERSION);
+  assert.equal(getPlanCoaching(createInitialState(), defaultPlan(createInitialState())).methodologyVersion, LEGACY_COACHING_METHODOLOGY_VERSION);
   assert.match(review.methodology, /Historical decision grades are recalculated/);
   assert.match(review.methodology, /board separately assesses realized performance/);
   assert.equal(JSON.stringify(state), before);

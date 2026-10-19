@@ -1,14 +1,18 @@
 /** Read-only business coaching. Decisions use public forecasts; replay uses the same shocks. */
 import {
-  PRODUCTS, PLAN_FIELDS, advanceMonth, createReplayInitialState, defaultPlan,
+  PRODUCTS, getPlanFields, advanceMonth, createReplayInitialState, defaultPlan,
   forecast, getMarketOutlook, validatePlan, validateState,
 } from './simulation.js';
+import { campaignLength } from './campaign-calendar.js';
 
 const clamp = (n, low, high) => Math.max(low, Math.min(high, n));
 const sum = values => values.reduce((a, b) => a + b, 0);
 const clone = value => JSON.parse(JSON.stringify(value));
 const round = n => Math.round(n * 100) / 100;
-export const COACHING_METHODOLOGY_VERSION = '2.0';
+export const COACHING_METHODOLOGY_VERSION = '3.0';
+export const LEGACY_COACHING_METHODOLOGY_VERSION = '2.0';
+const executiveRubric = state => state?.version === '1.3.0';
+const methodologyVersion = state => executiveRubric(state) ? COACHING_METHODOLOGY_VERSION : LEGACY_COACHING_METHODOLOGY_VERSION;
 const DEFINITIONS = [
   { id: 'economics', label: 'Earnings discipline', maximum: 25 },
   { id: 'workingCapital', label: 'Cash & inventory discipline', maximum: 20 },
@@ -16,13 +20,17 @@ const DEFINITIONS = [
   { id: 'capability', label: 'Quality & future capability', maximum: 20 },
   { id: 'risk', label: 'Liquidity resilience', maximum: 15 },
 ];
+const EXECUTIVE_DEFINITIONS = DEFINITIONS.map(definition => ({ ...definition,
+  maximum: definition.id === 'economics' ? 30 : definition.id === 'risk' ? 10 : definition.maximum,
+}));
+const definitionsFor = state => executiveRubric(state) ? EXECUTIVE_DEFINITIONS : DEFINITIONS;
 const letter = score => score >= 90 ? 'A' : score >= 80 ? 'B' : score >= 70 ? 'C' : score >= 60 ? 'D' : 'F';
 const unavailable = (month, reason) => ({ available: false, month, reason, score: null, grade: null, components: [], alternatives: [] });
 const workingCapital = sheet => sheet.receivables + sheet.inventory - sheet.payables;
 
 function feasible(opening, plan) {
   const result = {};
-  for (const field of PLAN_FIELDS) {
+  for (const field of getPlanFields(opening)) {
     const value = Number.isFinite(plan[field.key]) ? plan[field.key] : defaultPlan(opening)[field.key];
     result[field.key] = clamp(value, field.min, field.max);
     if (field.key.endsWith('Production')) result[field.key] = Math.round(result[field.key]);
@@ -72,7 +80,76 @@ function candidatePlans(opening, original) {
   return candidates;
 }
 
+// Published operating standards: meeting the standard earns 75%, while an A
+// requires measurable progress toward the stretch level. These thresholds do
+// not depend on the candidate set, difficulty, seed or the player's visit count.
+function standard(value, floor, meets, stretch) {
+  return clamp(value <= meets ? 75 * (value - floor) / (meets - floor)
+    : 75 + 25 * (value - meets) / (stretch - meets), 0, 100);
+}
+
+function executiveAssessment(opening, result) {
+  const { state: ending, report } = result;
+  const revenueScale = Math.max(20, sum(PRODUCTS.map(product => product.baseDemand * product.basePrice * 0.86 / 1000)));
+  const economics = clamp(40 + report.income.operatingProfit / revenueScale * 300, 0, 100);
+  const inventoryCover = report.balanceSheet.inventory / Math.max(8, report.income.cogs);
+  const changeInWorkingCapital = workingCapital(report.balanceSheet) - workingCapital(report.openingBalanceSheet);
+  const inventoryDiscipline = standard(-inventoryCover, -3, -0.9, -0.3);
+  const cashConversion = standard(-changeInWorkingCapital / revenueScale, -0.35, 0, 0.1);
+  const orders = sum(report.products.map(product => product.dealerOrders));
+  const demand = sum(report.products.map(product => product.demand));
+  const service = orders || demand ? 100 * (0.7 * (orders ? report.metrics.deliveries / orders : 1)
+    + 0.3 * (demand ? report.metrics.retailSales / demand : 1)) : 0;
+  const serviceScore = standard(service / 100, 0.5, 0.95, 0.99);
+
+  // Score the capability produced by investment, not dollars spent. Engineering
+  // is credited only through technology already funded and due within three
+  // months of the campaign; no unfunded future spending is assumed. Reproduce
+  // the engine's completion-before-obsolescence order and technology ceiling.
+  const horizon = Math.min(3, Math.max(0, campaignLength(ending) - ending.month));
+  const capabilityFacts = PRODUCTS.map(product => {
+    const current = ending.products[product.id];
+    let fundedTechnology = current.technology;
+    for (let offset = 1; offset <= horizon; offset += 1) {
+      const completed = sum(ending.rdPipeline.filter(project => project.remaining === offset).map(project => project.amount));
+      fundedTechnology = clamp(fundedTechnology + completed * 0.007 - 0.0025, 0.82, 1.25);
+    }
+    return { condition: current.condition, skill: current.skill, quality: current.quality, fundedTechnology };
+  });
+  const mean = key => sum(capabilityFacts.map(product => product[key])) / capabilityFacts.length;
+  const processQuality = mean('quality');
+  const achievedQuality = 0.7 * processQuality + 0.3 * report.metrics.qualityRate;
+  const condition = mean('condition');
+  const skill = mean('skill');
+  const fundedTechnology = mean('fundedTechnology');
+  const capability = 0.4 * standard(achievedQuality, 0.90, 0.975, 0.99)
+    + 0.2 * standard(condition, 0.70, 0.95, 1)
+    + 0.15 * standard(skill, 0.75, 1, 1.08)
+    + 0.25 * standard(fundedTechnology, 0.85, 1.03, 1.15);
+
+  const resources = ending.cash + Math.max(0, 160 - ending.corporateDebt);
+  const monthlyCommitments = Math.max(6.25, report.income.operatingExpense + report.income.interestExpense);
+  const liquidityMonths = resources / monthlyCommitments;
+  let risk = standard(liquidityMonths, 0, 6, 12);
+  if (ending.cash < 0) risk = Math.min(risk, clamp(40 + ending.cash * 2, 0, 40));
+  if (ending.status === 'distressed') risk = 0;
+  const guardrail = ending.status === 'distressed'
+    ? { maximum: 39, reason: 'Projected financial distress limits the decision score to 39.' }
+    : ending.cash < 0 ? { maximum: 59, reason: 'A projected cash deficit limits the decision score to 59.' } : null;
+  return {
+    definitions: EXECUTIVE_DEFINITIONS, guardrail,
+    values: { economics, workingCapital: inventoryDiscipline * 0.65 + cashConversion * 0.35,
+      service: serviceScore, capability, risk },
+    facts: { executive: true, operatingProfit: report.income.operatingProfit, revenue: report.income.wholesaleRevenue,
+      inventoryCover, changeInWorkingCapital, inventory: report.balanceSheet.inventory, service,
+      quality: report.metrics.qualityRate, achievedQuality, processQuality, condition, skill, fundedTechnology,
+      capabilityHorizon: horizon, revenueScale, cash: ending.cash, resources, liquidityMonths, monthlyCommitments,
+      status: ending.status },
+  };
+}
+
 function rawAssessment(opening, result) {
+  if (executiveRubric(opening)) return executiveAssessment(opening, result);
   const { state: ending, report } = result;
   const plan = report.plan;
   const revenue = report.income.wholesaleRevenue;
@@ -117,7 +194,7 @@ function rawAssessment(opening, result) {
 }
 
 function gradeAssessment(assessment, benchmarks) {
-  const components = DEFINITIONS.map(definition => {
+  const components = (assessment.definitions ?? DEFINITIONS).map(definition => {
     const absolute = assessment.values[definition.id];
     const regret = Math.max(0, benchmarks[definition.id] - absolute);
     // Keep an operating-standard anchor even when every tested policy is poor.
@@ -128,11 +205,20 @@ function gradeAssessment(assessment, benchmarks) {
     return { ...definition, score: round(percentage / 100 * definition.maximum), absoluteScore: round(absolute),
       benchmarkScore: round(benchmarks[definition.id]), opportunityPenalty: round((absolute - percentage) / 100 * definition.maximum) };
   });
+  const uncapped = sum(components.map(component => component.score));
+  if (assessment.guardrail && uncapped > assessment.guardrail.maximum) {
+    for (const component of components) {
+      const adjusted = round(component.score * assessment.guardrail.maximum / uncapped);
+      component.guardrailPenalty = round(component.score - adjusted);
+      component.score = adjusted;
+    }
+  }
   const score = Math.round(clamp(sum(components.map(component => component.score)), 0, 100));
-  return { score, grade: letter(score), components };
+  return { score, grade: letter(score), components,
+    ...(assessment.guardrail ? { guardrail: assessment.guardrail } : {}) };
 }
 
-const planChanges = (from, to) => PLAN_FIELDS.filter(field => Math.abs(from[field.key] - to[field.key]) > 1e-8).map(field => ({ key: field.key, label: field.label, from: from[field.key], to: to[field.key], unit: field.unit }));
+const planChanges = (opening, from, to) => getPlanFields(opening).filter(field => Math.abs(from[field.key] - to[field.key]) > 1e-8).map(field => ({ key: field.key, label: field.label, from: from[field.key], to: to[field.key], unit: field.unit }));
 const resultMetrics = result => ({ ...result.report.metrics, operatingProfit: result.report.income.operatingProfit,
   operatingWorkingCapital: workingCapital(result.report.balanceSheet), inventoryValue: result.report.balanceSheet.inventory });
 
@@ -143,11 +229,11 @@ function assessPlans(opening, plan) {
     const result = forecast(opening, candidate.plan);
     return { ...candidate, result, assessment: rawAssessment(opening, result) };
   });
-  const benchmarks = Object.fromEntries(DEFINITIONS.map(definition => [definition.id, Math.max(...candidates.map(candidate => candidate.assessment.values[definition.id]))]));
+  const benchmarks = Object.fromEntries(definitionsFor(opening).map(definition => [definition.id, Math.max(...candidates.map(candidate => candidate.assessment.values[definition.id]))]));
   const alternatives = candidates.map(candidate => ({
     id: candidate.id, name: candidate.name, rationale: candidate.rationale, plan: clone(candidate.plan),
     ...gradeAssessment(candidate.assessment, benchmarks), forecast: resultMetrics(candidate.result),
-    planChanges: planChanges(plan, candidate.plan),
+    planChanges: planChanges(opening, plan, candidate.plan),
   }));
   // Stable tie-breaking prefers the committed plan: do not claim an alternative
   // was superior when its visible score and economics were equivalent.
@@ -162,7 +248,7 @@ export function getPlanCoaching(state, plan) {
   try {
     const assessment = assessPlans(state, plan);
     const chosen = assessment.alternatives[0];
-    return { available: true, methodologyVersion: COACHING_METHODOLOGY_VERSION, month: state.month + 1, score: chosen.score, grade: chosen.grade,
+    return { available: true, methodologyVersion: methodologyVersion(state), month: state.month + 1, score: chosen.score, grade: chosen.grade,
       components: chosen.components, alternatives: assessment.alternatives, forecastBest: assessment.forecastBest };
   } catch (error) { return unavailable(state.month + 1, error.message); }
 }
@@ -171,6 +257,9 @@ export function getPlanCoaching(state, plan) {
 // numerical/physical field, plan, identifier, model version and status.
 const narrativeKeys = new Set(['title', 'detail', 'explanation', 'summary', 'name', 'segment', 'label', 'cycleSummary', 'regimeLabel']);
 function matchesGenerated(saved, generated, key = '') {
+  // Visits are persistent interface metadata, never financial inputs. The
+  // simulator validates their structure; replay must not invent past visits.
+  if (key === 'ceoJournal') return true;
   if (narrativeKeys.has(key)) return true;
   if (typeof generated === 'number') return typeof saved === 'number' && Number.isFinite(saved) && Math.abs(saved - generated) < 1e-7;
   if (generated === null || typeof generated !== 'object') return saved === generated;
@@ -195,6 +284,17 @@ function replayOpening(state, month) {
 }
 
 function explainComponents(components, facts) {
+  if (facts.executive) {
+    const details = {
+      economics: `Expected operating profit is $${facts.operatingProfit.toFixed(1)}m against a fixed $${facts.revenueScale.toFixed(1)}m reference revenue scale. Break-even earns 40% of earnings points; a 10% reference return earns 70%, and 20% earns 100%.`,
+      workingCapital: `Expected inventory covers ${facts.inventoryCover.toFixed(2)} months of current shipment cost; 0.9 earns 75% of inventory points and 0.3 earns 100%. Operating working capital ${facts.changeInWorkingCapital >= 0 ? 'absorbs' : 'releases'} $${Math.abs(facts.changeInWorkingCapital).toFixed(1)}m. Inventory savings must be weighed against service risk.`,
+      service: `Expected dealer and retail fulfillment is ${facts.service.toFixed(1)}% on the combined measure. 95% earns 75% of service points; 99% earns 100%. A 90% service rate still leaves one in ten orders or purchases unfilled.`,
+      capability: `Expected process quality is ${(facts.processQuality * 100).toFixed(1)}%, plant condition ${(facts.condition * 100).toFixed(1)}%, workforce skill ${(facts.skill * 100).toFixed(1)}%, and technology after already-funded engineering within ${facts.capabilityHorizon} months is ${facts.fundedTechnology.toFixed(3)}. Meeting standards are 97.5% blended quality, 95% condition, 100% skill and 1.03 technology. Spending itself earns no points; unused capacity earns none either.`,
+      risk: `Expected cash is $${facts.cash.toFixed(1)}m; cash plus undrawn credit is $${facts.resources.toFixed(1)}m, covering ${facts.liquidityMonths.toFixed(1)} months of current operating expense and interest. Six months earns 75% and twelve earns 100% of liquidity points. This is a spending buffer, not a cash-flow forecast or a promise of survival.`,
+    };
+    return components.map(component => ({ ...component, detail: details[component.id]
+      + (component.guardrailPenalty ? ` The company-wide liquidity guardrail removes ${component.guardrailPenalty.toFixed(1)} additional points here.` : '') }));
+  }
   const details = {
     economics: `Expected operating profit is $${facts.operatingProfit.toFixed(1)}m, ${(facts.operatingProfit / facts.revenueScale * 100).toFixed(1)}% of the fixed $${facts.revenueScale.toFixed(1)}m reference revenue scale. Break-even earns 50% of earnings points; a 10% return earns 80%. Borrowing does not increase earnings.`,
     workingCapital: `Expected inventory is $${facts.inventory.toFixed(1)}m; operating working capital ${facts.changeInWorkingCapital >= 0 ? 'increases' : 'decreases'} by $${Math.abs(facts.changeInWorkingCapital).toFixed(1)}m.`,
@@ -213,7 +313,7 @@ function teaching(chosen, best, facts) {
     economics: 'Compare manufacturer revenue after the dealer discount with unit cost and warranty provision. Then check whether contribution covers shared overhead.',
     workingCapital: 'Use existing finished stock before scheduling assembly. Test a lower component buffer against the forecast delivery risk.',
     service: 'Check each product’s dealer orders, finished stock and controller supply before increasing marketing or accepting lost sales.',
-    capability: 'Compare maintenance, training and quality support with the rate of deterioration; preserve engineering for future products.',
+    capability: facts.executive ? 'Inspect the plant and workforce constraints. Fund improvements that address the actual weakness; check engineering completion dates and expected technology before paying for additional capacity.' : 'Compare maintenance, training and quality support with the rate of deterioration; preserve engineering for future products.',
     risk: 'Review the cash projection before committing. Reduce avoidable purchases and investments, then use available borrowing if liquidity still falls below zero.',
   };
   const improvements = [...ordered].reverse().filter(component => component.score / component.maximum < 0.92).slice(0, 2).map(component => ({ title: component.label, detail: component.detail, action: recommendations[component.id] }));
@@ -253,13 +353,15 @@ export function getMonthlyCoaching(state, month = state?.month) {
     const demandExpected = sum(assessed.candidates[0].result.report.products.map(product => product.demand));
     const demandChange = demandExpected ? (demandActual - demandExpected) / demandExpected : null;
     return {
-      available: true, methodologyVersion: COACHING_METHODOLOGY_VERSION, month, score: selected.score, grade: selected.grade, components,
+      available: true, methodologyVersion: methodologyVersion(opening), month, score: selected.score, grade: selected.grade, components,
       ...teaching(explained, forecastBest, expectedFacts), alternatives, forecastBest, hindsightBest,
       planChanges: hindsightBest.planChanges,
       actualVsForecast: { forecast: expected, actual, variance, outcomeScore: selected.actualScore, outcomeGrade: selected.actualGrade },
       shockContext: { publicOutlook, events: clone(marketEvents), demandChange,
         summary: demandChange === null ? 'There was no expected demand to compare.' : `Customer demand was ${Math.abs(demandChange * 100).toFixed(1)}% ${demandChange >= 0 ? 'above' : 'below'} the public forecast. The decision grade was fixed before these outcomes were known.` },
-      methodology: 'Decision-quality rubric 2.0 uses the public expected outcome, with five weighted operating standards. Each blends 75% of its criterion score with 25% of that same score reduced for avoidable shortfalls against nine feasible test policies. Comparison can only deduct points; equally weak alternatives do not create a high grade. Break-even earns half of earnings points. A ≥90; B ≥80; C ≥70; D ≥60; F <60. Actual outcomes are scored separately using the same benchmarks; the board separately assesses realized performance against its published goals. Historical decision grades are recalculated with this rubric without changing any saved result. Hindsight compares only these tested plans from the identical opening position and realized shocks; it is not a global optimum or a promise about later months.',
+      methodology: executiveRubric(opening)
+        ? 'Decision-quality rubric 3.0 uses only the public forecast, with earnings (30 points), inventory and cash conversion (20), customer service (20), achieved and already-funded capability (20), and liquidity (10). Meeting an operating standard generally earns 75% of its points; stretch performance is needed for 100%. Break-even earns 40% of earnings points. Spending, new capacity, borrowed cash and advisor attendance earn no points by themselves. Already-funded engineering is evaluated within three remaining campaign months; unfunded future spending is not assumed. A cash deficit caps the total at 59; financial distress caps it at 39. Nine feasible test policies can only deduct points for avoidable gaps, by at most a quarter of each criterion score. A ≥90; B ≥80; C ≥70; D ≥60; F <60. Actual outcomes are scored separately using the same benchmarks; the board separately assesses realized performance and employment against its published goals. Older campaigns retain rubric 2.0. Hindsight compares these tested plans from the identical opening position and realized shocks; it is not a global optimum or a promise about later months. The separate strategy comparison evaluates longer-term value and forecasts.'
+        : 'Decision-quality rubric 2.0 uses the public expected outcome, with five weighted operating standards. Each blends 75% of its criterion score with 25% of that same score reduced for avoidable shortfalls against nine feasible test policies. Comparison can only deduct points; equally weak alternatives do not create a high grade. Break-even earns half of earnings points. A ≥90; B ≥80; C ≥70; D ≥60; F <60. Actual outcomes are scored separately using the same benchmarks; the board separately assesses realized performance against its published goals. Historical decision grades are recalculated with this rubric without changing any saved result. Hindsight compares only these tested plans from the identical opening position and realized shocks; it is not a global optimum or a promise about later months.',
     };
   } catch (error) {
     return unavailable(month, `A trustworthy historical comparison is unavailable. ${error.message}`);

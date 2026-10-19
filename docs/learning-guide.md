@@ -2,6 +2,12 @@
 
 The campaign is a practice environment for operating judgment. The market, product costs, shocks, and coaching targets are synthetic game assumptions. Historical CNH disclosures provide context for the problems an equipment company faces; they do not calibrate this simulation or make it a forecast of CNH.
 
+## Consult before committing
+
+Each month, visit the CFO, sales director and strategy director at headquarters, and operations, quality and supply leaders on the factory floor. Their briefings explain public evidence and unlock targeted strategy experiments. No meeting reveals a future event or awards points. The Team list provides the same conversations on mobile or without 3D.
+
+Use **Best tested strategy** to compare up to six expected months, selecting balanced, growth or resilience priorities. More information broadens the tested options; it does not guarantee the outcome. Competitor comparisons use explicitly fictional benchmarks. The [executive campaign guide](executive-campaign.md) explains difficulty, new levers and dismissal.
+
 ## Know what the board expects
 
 Start with the board mandate, before changing the operating plan. The opening scenario determines the emphasis: a soft market calls for cash discipline and protection of the franchise; a flat market calls for profitable share and a stronger business; an upswing calls for capturing demand without overextending. New campaigns disclose monthly targets, quarterly milestones, and annual commitments from the start. The public outlook can change the board's advice, but it does not rewrite those targets after a bad month. An older save that never showed this mandate uses a labeled retrospective learning benchmark; it is not treated as a promise the player previously made.
@@ -98,7 +104,7 @@ The headline is a **0–100 decision score** with a simple letter: **A ≥ 90, B
 
 Decision-quality rubric **2.0** anchors each dimension to a modeled operating standard. Seventy-five percent retains that criterion score; the remaining quarter starts from the same score and can be reduced for avoidable shortfalls against tested feasible policies. Comparison can only deduct points. Being the strongest of several poor plans cannot manufacture a high grade, and operating break-even earns half the earnings points before any comparison deduction. These are teaching priorities, not external benchmarks of executive competence. Borrowing alone does not create earnings or cash-plus-unused-credit resources.
 
-The board separately asks whether actual results met its published goals. The decision coach asks how reasonable the chosen plan looked under the expected conditions available at the time. The scores can differ without contradiction. Historical coaching grades are recalculated under rubric 2.0, while saved decisions, accounts, and actual results remain unchanged. See the [coaching model](coaching-model.md) for the full rubric.
+The board separately asks whether actual results met its published goals. The decision coach asks how reasonable the chosen plan looked under the expected conditions available at the time. The scores can differ without contradiction. Older campaigns retain rubric 2.0; version 1.3 campaigns use the more demanding outcome standards in rubric 3.0. Saved decisions, accounts, and actual results remain unchanged. See the [coaching model](coaching-model.md) for the full rubric.
 
 The hindsight comparison asks how alternative plans would have performed from the same opening position under the same realized conditions. **Best tested** means the strongest result among the plans the coach evaluated under its stated score. It is not a proof of a global optimum, advice to copy those decisions into a different month, or the best possible campaign strategy. Different goals and longer investment horizons can favor a different plan.
 
@@ -112,7 +118,7 @@ The public market outlook describes a scenario's expected direction. Seasonality
 
 New cyclical campaigns start with a **Soft market**, **Flat market**, or **Upswing market** outlook. The forecast updates as observed conditions change; demand turns can persist across months, and supplier disruptions can take time to recover. A saved seed permits a reproducible campaign: the same model, opening state, seed, and decisions produce the same results. Reproducibility makes comparisons fair; changing the scenario seed creates a different challenge. Expected forecasts do not reveal future surprise outcomes.
 
-Existing campaigns retain their original market rules and duration. Version 1.0.0 and 1.1.0 saves remain one year; a new three-year campaign uses version 1.2.0. Start a new campaign to select a different duration or market model, and export a backup first to retain the previous run. The [market-cycle model](market-cycles.md) and [three-year rules](multi-year.md) document the scenario and replay mechanics.
+Existing campaigns retain their original market rules and duration. Version 1.0.0 and 1.1.0 saves remain one year; version 1.2.0 saves remain three years. New campaigns with difficulty use version 1.3.0. Start a new campaign to select a different duration or market model, and export a backup first to retain the previous run. The [market-cycle model](market-cycles.md) and [three-year rules](multi-year.md) document the scenario and replay mechanics.
 
 The game uses this structure to practice adjustment, not to teach that every downturn lasts a fixed number of months. Preserve options, watch channel inventory, and revisit assumptions after each result. Do not treat the annual outlook as a guarantee.
 

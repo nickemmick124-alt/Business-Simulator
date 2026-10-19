@@ -13,15 +13,27 @@ const clamp = (x, min, max) => Math.min(max, Math.max(min, x));
 const number = (value, fallback = 0) => Number.isFinite(Number(value)) ? Number(value) : fallback;
 const fmt = value => Math.round(number(value)).toLocaleString('en-US');
 
-/** The rendered world is an inspectable view of the simulation; it never advances its clock. */
+const ADVISOR_STATIONS = [
+  { id: 'cfo', label: 'CFO', location: 'headquarters', x: -8.6, z: 1.0 },
+  { id: 'sales', label: 'SALES DIRECTOR', location: 'headquarters', x: 7.3, z: 4.2 },
+  { id: 'strategy', label: 'STRATEGY DIRECTOR', location: 'headquarters', x: 7.7, z: -4.7 },
+  { id: 'operations', label: 'PLANT MANAGER', location: 'factory', x: -2.5, z: 3.7 },
+  { id: 'quality', label: 'QUALITY LEAD', location: 'factory', x: 13.0, z: 3.7 },
+  { id: 'supply', label: 'SUPPLY LEAD', location: 'factory', x: -12.5, z: 3.7 },
+];
+const CONSULT_DISTANCE = 2.6;
+
+/** The world lets the CEO inspect operations and consult people; it never advances its clock. */
 export class World {
-  constructor({ container, onInspect = () => {}, onLocationChange = () => {}, onReady = () => {}, onError = () => {} }) {
+  constructor({ container, onInspect = () => {}, onMeet = () => {}, onAdvisorHint = () => {}, onLocationChange = () => {}, onReady = () => {}, onError = () => {} }) {
     this.container = container;
     this.onInspect = onInspect;
+    this.onMeet = onMeet;
+    this.onAdvisorHint = onAdvisorHint;
     this.onLocationChange = onLocationChange;
     this.onReady = onReady;
     this.onError = onError;
-    this.state = { month: 1, cash: 0, production: 0, inventory: 0, shortage: 0, quality: 0, serviceLevel: 0, products: [] };
+    this.state = { month: 1, cash: 0, production: 0, inventory: 0, shortage: 0, quality: 0, serviceLevel: 0, products: [], advisorsVisited: [], advisersEnabled: false };
     this.location = 'headquarters';
     this.viewMode = 'orbit';
     this.paused = false;
@@ -31,6 +43,7 @@ export class World {
     this.textures = [];
     this.clickTargets = [];
     this.hotspots = [];
+    this.advisors = [];
     this.animations = [];
     this.keys = new Set();
     this.pointer = new THREE.Vector2();
@@ -48,7 +61,7 @@ export class World {
       this.renderer.outputColorSpace = THREE.SRGBColorSpace;
       this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
       this.renderer.toneMappingExposure = 1.2;
-      this.renderer.domElement.setAttribute('aria-label', 'Interactive 3D company world. Drag to orbit, scroll to zoom, and select a station to inspect.');
+      this.renderer.domElement.setAttribute('aria-label', 'Interactive 3D company world. Drag to orbit, scroll to zoom, select a station to inspect or a person to consult. In Walk mode use W A S D to move and E near a person to consult. The team list offers the same meetings without navigating the world.');
       this.renderer.domElement.setAttribute('role', 'img');
       this.renderer.domElement.style.cssText = 'width:100%;height:100%;display:block;touch-action:none;outline:none';
       this.renderer.domElement.tabIndex = 0;
@@ -92,6 +105,7 @@ export class World {
       this.scene.add(this.headquarters, this.factory);
       this.buildHeadquarters();
       this.buildFactory();
+      this.buildAdvisors();
       [...new Set([...this.animations.map(animation => animation.object), ...this.dispatchMachines])].forEach(group => this.batchStaticGeometry(group));
       this.batchStaticGeometry(this.headquarters);
       this.batchStaticGeometry(this.factory);
@@ -235,6 +249,95 @@ export class World {
     return human;
   }
 
+  buildAdvisors() {
+    ADVISOR_STATIONS.forEach(station => {
+      const group = new THREE.Group();
+      group.position.set(station.x, 0.19, station.z);
+      const parent = station.location === 'factory' ? this.factory : this.headquarters;
+      parent.add(group);
+      const person = this.human(group, 0, 0, 0, station.location === 'factory');
+      person.scale.setScalar(1.25);
+      // A distinct floor marker and speech badge separate advisers from decorative staff.
+      const markerMaterial = new THREE.MeshBasicMaterial({ color: '#356d99', transparent: true, opacity: 0.86, side: THREE.DoubleSide, depthWrite: false });
+      this.materials.set(`advisor-${station.id}`, markerMaterial);
+      const ring = new THREE.Mesh(this.geometry('advisor-ring', () => new THREE.RingGeometry(0.52, 0.66, 32)), markerMaterial);
+      ring.rotation.x = -Math.PI / 2;
+      ring.position.y = 0.02;
+      group.add(ring);
+      const badge = new THREE.Group();
+      badge.position.set(0, 2.05, 0);
+      group.add(badge);
+      const disc = new THREE.Mesh(this.geometry('advisor-disc', () => new THREE.CircleGeometry(0.24, 24)), markerMaterial);
+      badge.add(disc);
+      const unread = new THREE.Group();
+      this.box(unread, [0.045, 0.17, 0.025], [0, 0.035, 0.015], C.white, false);
+      this.box(unread, [0.045, 0.045, 0.025], [0, -0.105, 0.015], C.white, false);
+      badge.add(unread);
+      const consulted = new THREE.Group();
+      const checkStart = this.box(consulted, [0.045, 0.13, 0.025], [-0.07, -0.035, 0.015], C.white, false);
+      checkStart.rotation.z = Math.PI / 4;
+      const checkEnd = this.box(consulted, [0.045, 0.23, 0.025], [0.035, 0.005, 0.015], C.white, false);
+      checkEnd.rotation.z = -Math.PI / 4;
+      badge.add(consulted);
+      consulted.visible = false;
+      const label = this.sign(group, station.label, 2.7, 0.38, [0, 2.55, 0], { background: C.ink, fontSize: 64 });
+      const target = this.box(group, [1.3, 3.0, 1.3], [0, 1.4, 0], C.white, false, { transparent: true, opacity: 0, depthWrite: false });
+      target.userData.advisorId = station.id;
+      target.userData.location = station.location;
+      this.clickTargets.push(target);
+      this.advisors.push({ ...station, group, badge, labelMesh: label, ring, unread, consulted, markerMaterial, visited: false });
+      group.visible = Boolean(this.state.advisersEnabled);
+    });
+  }
+
+  advisorDistance(advisor) {
+    return Math.hypot(this.camera.position.x - advisor.x, this.camera.position.z - advisor.z);
+  }
+
+  nearestAdvisor() {
+    if (!this.state.advisersEnabled || !this.camera || this.disposed) return null;
+    return this.advisors.filter(advisor => advisor.location === this.location)
+      .reduce((nearest, advisor) => !nearest || this.advisorDistance(advisor) < this.advisorDistance(nearest) ? advisor : nearest, null);
+  }
+
+  meetAdvisor(id) {
+    if (!this.state.advisersEnabled || this.disposed) return false;
+    const advisor = this.advisors.find(person => person.id === id && person.location === this.location);
+    if (!advisor || (this.viewMode === 'walk' && this.advisorDistance(advisor) > CONSULT_DISTANCE)) return false;
+    this.keys.clear();
+    this.onMeet(id);
+    // Reading the briefing, not selecting its 3D marker, records the meeting in the application.
+    return true;
+  }
+
+  focusAdvisor(id) {
+    if (!this.camera || !this.state.advisersEnabled || this.disposed) return false;
+    const advisor = this.advisors.find(person => person.id === id);
+    if (!advisor) return false;
+    if (this.location !== advisor.location) this.setLocation(advisor.location);
+    const target = new THREE.Vector3(advisor.x, 1.45, advisor.z);
+    const position = this.viewMode === 'walk'
+      ? new THREE.Vector3(advisor.x, 2.1, advisor.z + 2.1)
+      : target.clone().add(new THREE.Vector3(5.0, 5.0, 7.5));
+    this.keys.clear();
+    this.hovered = `advisor:${id}`;
+    this.moveCamera(position, target);
+    return true;
+  }
+
+  updateAdvisorHint() {
+    const advisor = this.state.advisersEnabled
+      ? this.viewMode === 'walk' ? this.nearestAdvisor() : this.advisors.find(person => this.hovered === `advisor:${person.id}` && person.location === this.location)
+      : null;
+    const distance = advisor ? this.advisorDistance(advisor) : null;
+    const hint = advisor ? { id: advisor.id, label: advisor.label, distance: Math.round(distance * 2) / 2, nearby: distance <= CONSULT_DISTANCE, visited: advisor.visited, walk: this.viewMode === 'walk' } : null;
+    const signature = JSON.stringify(hint);
+    if (signature !== this.advisorHintSignature) {
+      this.advisorHintSignature = signature;
+      this.onAdvisorHint(hint);
+    }
+  }
+
   wheel(parent, radius, width, x, y, z, hubColor = C.cream) {
     const wheel = this.cylinder(parent, radius, width, [x, y, z], C.black);
     wheel.rotation.z = Math.PI / 2;
@@ -327,6 +430,7 @@ export class World {
       ...this.animations.map(animation => animation.object),
       ...(this.dispatchMachines || []),
       ...this.hotspots.map(hotspot => hotspot.group),
+      ...this.advisors.map(advisor => advisor.group),
     ]);
     const batches = new Map();
     root.updateWorldMatrix(true, true);
@@ -656,6 +760,15 @@ export class World {
     // Visual inventory is representative; exact unit counts live in the inspection panel.
     const visibleCount = units <= 0 ? 0 : clamp(Math.ceil(units / 100), 1, 5);
     this.dispatchMachines?.forEach((machine, i) => { machine.visible = i < visibleCount; });
+    const visited = new Set(Array.isArray(this.state.advisorsVisited) ? this.state.advisorsVisited : []);
+    this.advisors.forEach(advisor => {
+      advisor.group.visible = Boolean(this.state.advisersEnabled);
+      advisor.visited = visited.has(advisor.id);
+      advisor.markerMaterial.color.set(advisor.visited ? '#366650' : '#356d99');
+      advisor.unread.visible = !advisor.visited;
+      advisor.consulted.visible = advisor.visited;
+    });
+    this.updateAdvisorHint();
     if (this.selected) this.onInspect(this.inspection(this.selected));
   }
 
@@ -717,13 +830,19 @@ export class World {
     this.onPointerMove = event => {
       if (this.disposed) return;
       const hit = this.pick(event);
-      this.hovered = hit?.object.userData.inspectId || null;
+      this.hovered = hit?.object.userData.advisorId ? `advisor:${hit.object.userData.advisorId}` : hit?.object.userData.inspectId || null;
       canvas.style.cursor = this.hovered ? 'pointer' : this.viewMode === 'walk' ? 'move' : 'grab';
     };
     this.onPointerUp = event => {
       if (!this.pointerStart || Math.hypot(event.clientX - this.pointerStart.x, event.clientY - this.pointerStart.y) > 6) return;
       const hit = this.pick(event);
       if (hit) {
+        if (hit.object.userData.advisorId) {
+          this.hovered = `advisor:${hit.object.userData.advisorId}`;
+          this.meetAdvisor(hit.object.userData.advisorId);
+          this.updateAdvisorHint();
+          return;
+        }
         const id = hit.object.userData.inspectId;
         this.selected = id;
         this.onInspect(this.inspection(id));
@@ -735,6 +854,10 @@ export class World {
         return;
       }
       if (['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ShiftLeft', 'ShiftRight'].includes(event.code)) this.keys.add(event.code);
+      if (event.code === 'KeyE' && !event.repeat) {
+        const advisor = this.nearestAdvisor();
+        if (advisor && this.meetAdvisor(advisor.id)) event.preventDefault();
+      }
     };
     this.onKeyUp = event => this.keys.delete(event.code);
     this.onBlur = () => this.keys.clear();
@@ -753,7 +876,7 @@ export class World {
     const rect = this.renderer.domElement.getBoundingClientRect();
     this.pointer.set(((event.clientX - rect.left) / rect.width) * 2 - 1, -((event.clientY - rect.top) / rect.height) * 2 + 1);
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    return this.raycaster.intersectObjects(this.clickTargets.filter(mesh => mesh.userData.location === this.location), false)[0];
+    return this.raycaster.intersectObjects(this.clickTargets.filter(mesh => mesh.userData.location === this.location && (!mesh.userData.advisorId || this.state.advisersEnabled)), false)[0];
   }
 
   resize() {
@@ -821,6 +944,15 @@ export class World {
       hotspot.dot.position.y = active ? 0.16 : 0.09;
     });
     this.controls.update();
+    this.advisors.forEach(advisor => {
+      if (advisor.location !== this.location || !advisor.group.visible) return;
+      advisor.badge.quaternion.copy(this.camera.quaternion);
+      advisor.labelMesh.quaternion.copy(this.camera.quaternion);
+      const active = this.hovered === `advisor:${advisor.id}` || (this.viewMode === 'walk' && this.advisorDistance(advisor) <= CONSULT_DISTANCE);
+      advisor.ring.scale.setScalar(active ? 1.12 : 1);
+      advisor.badge.position.y = active ? 2.13 : 2.05;
+    });
+    this.updateAdvisorHint();
     this.renderer.render(this.scene, this.camera);
   }
 

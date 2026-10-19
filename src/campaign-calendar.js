@@ -2,7 +2,7 @@
 const MONTH_NAMES = Object.freeze(['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']);
 
 export function campaignLength(state) {
-  return state?.version === '1.2.0' && state.campaignMonths === 36 ? 36 : 12;
+  return ['1.2.0', '1.3.0'].includes(state?.version) && state.campaignMonths === 36 ? 36 : 12;
 }
 
 export function calendarMonth(month) {
@@ -26,5 +26,5 @@ export function campaignYearEnd(state) {
 }
 
 export function isCyclicalState(state) {
-  return state?.version === '1.1.0' || state?.version === '1.2.0';
+  return ['1.1.0', '1.2.0', '1.3.0'].includes(state?.version);
 }

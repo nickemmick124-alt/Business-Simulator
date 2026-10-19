@@ -1,8 +1,10 @@
 # Three-year campaigns
 
-New three-year campaigns use simulation rules version `1.2.0` and store `campaignMonths: 36`. The engine API is `createInitialState(seed, { campaignMonths: 36, marketRegime: 'soft' | 'flat' | 'upswing' | 'random' })`. Omitting the regime for a three-year campaign selects `random`, resolved once from the seed. Lengths other than 12 and 36 are rejected.
+The original three-year campaigns use simulation rules version `1.2.0` and store `campaignMonths: 36`. The engine API is `createInitialState(seed, { campaignMonths: 36, marketRegime: 'soft' | 'flat' | 'upswing' | 'random' })`. Omitting the regime for a three-year campaign selects `random`, resolved once from the seed. Lengths other than 12 and 36 are rejected.
 
 Existing version `1.0.0` and `1.1.0` campaigns retain their original twelve months and exact deterministic results. A completed campaign does not become a new year automatically. Export/import keeps the selected duration and all history; replay recreates the original version, initial public regime, and length.
+
+New campaigns with `difficulty` use version `1.3.0` and the same calendar rules, with either 12 or 36 months. [Executive campaign rules](executive-campaign.md) document the added competition, levers and employment system. Existing campaigns are not migrated.
 
 ## What carries into the next year
 

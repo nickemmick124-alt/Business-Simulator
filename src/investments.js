@@ -132,7 +132,7 @@ export function getInvestmentOptions(state, inputPlan, horizon = 6) {
       'Operating capability can improve without more sales. Production targets, component supply, dealer demand, pricing and competitor pressure can still constrain the result.',
       'First benefit means the earliest possible change in the modeled capability, not a promise of profit, sales, payback or a return on investment. Effects can hit capability limits.',
       'Quality and delivery percentages summarize the compared months, weighted by assembly volume and dealer orders. Capacity and capability indices describe the last compared month; market share uses customer retail sales in that month.',
-      'Differences use the same elapsed months across all enabled options. A distressed case shortens the comparison; no later result or long-term investment return is invented.',
+      'Differences use the same elapsed months across all enabled options. Financial distress or projected CEO dismissal shortens the comparison; no later result or long-term investment return is invented.',
     ],
   };
   if (!active(state)) return result;
@@ -173,6 +173,7 @@ export function getInvestmentOptions(state, inputPlan, horizon = 6) {
       },
       months, summary: summarize(months), comparison: null, warnings: [],
       stopReason: !enabled ? 'disabled' : months.at(-1)?.status === 'distressed' ? 'distress'
+        : months.at(-1)?.status === 'dismissed' ? 'dismissal'
         : months.at(-1)?.month === campaignLength(state) ? (campaignLength(state) === 12 ? 'year-end' : 'campaign-end') : 'horizon',
     });
   }
@@ -187,8 +188,17 @@ export function getInvestmentOptions(state, inputPlan, horizon = 6) {
     id: 'financial-distress', severity: 'danger',
     detail: `${distressed.map(option => `${option.name}: month ${option.months.at(-1).month}`).join('; ')}. These projections reach financial distress; a budget within its allowed range is not necessarily affordable.`,
   });
+  const dismissed = enabled.filter(option => option.stopReason === 'dismissal');
+  if (dismissed.length) result.warnings.push({
+    id: 'projected-dismissal', severity: 'danger',
+    detail: `${dismissed.map(option => `${option.name}: month ${option.months.at(-1).month}`).join('; ')}. These projections reach the board's dismissal threshold. Forecast strikes do not change your actual employment record.`,
+  });
+  const earlyStops = [
+    ...distressed.map(option => `${option.name} reaches distress in month ${option.months.at(-1).month}`),
+    ...dismissed.map(option => `${option.name} reaches projected dismissal in month ${option.months.at(-1).month}`),
+  ];
   result.comparisonNote = result.truncated
-    ? `All differences compare months ${state.month + 1}–${state.month + common}. ${distressed.map(option => `${option.name} reaches distress in month ${option.months.at(-1).month}`).join('; ')}. The ${count}-month requested comparison is shortened; later results are not comparable.`
+    ? `All differences compare months ${state.month + 1}–${state.month + common}. ${earlyStops.join('; ')}. The ${count}-month requested comparison is shortened; later results are not comparable.`
     : `All differences compare the same ${common} months, ${state.month + 1}–${state.month + common}${count < requested ? (campaignLength(state) === 12 ? ', stopping at campaign year-end' : ', stopping at campaign end') : ''}.`;
   const baselineSummary = summarize(baseline.months.slice(0, common));
   for (const option of enabled) {

@@ -188,11 +188,18 @@ function projectionWarnings(current, months) {
     detail: `The expected scenario reaches financial distress in month ${ending.month}; later months are not projected.`,
     action: 'Revise the operating and financing plan before advancing the live campaign.',
   });
+  if (ending.status === 'dismissed') warnings.push({
+    id: 'projected-dismissal', severity: 'danger', month: ending.month,
+    title: 'This projection ends your tenure early',
+    detail: `The expected scenario reaches the board's dismissal threshold in month ${ending.month}; later months are not projected.`,
+    action: 'Review the employment guardrails and compare a recovery plan before committing. A forecast does not add actual strikes.',
+  });
   return warnings;
 }
 
 /**
- * Sequential mean-outcome planning, stopping at requested horizon, distress, or campaign end.
+ * Sequential mean-outcome planning, stopping at the requested horizon, distress,
+ * dismissal, or campaign end.
  * The current policy repeats, except borrowing/repayment and capex are one-time.
  * This function never advances or modifies the live state or its saved history.
  */
@@ -206,7 +213,7 @@ export function projectBusiness(state, plan, horizon = 3) {
       'Expected scenario using public demand and average operating outcomes; this is not a guarantee or a probability range.',
       'Current prices, production targets, recurring budgets, overtime, component buffer, and customer APR repeat each month.',
       'Corporate borrowing or repayment and capital expenditure apply in the first projected month only, then reset to zero.',
-      `Each month carries forward inventory, dealer stock, receivables, payables, loans, capabilities, and investment lead times. Projection stops at financial distress or campaign month ${campaignLength(state)}.`,
+      `Each month carries forward inventory, dealer stock, receivables, payables, loans, capabilities, and investment lead times. Projection stops at financial distress, projected dismissal in executive campaigns, or campaign month ${campaignLength(state)}.`,
       'All figures are synthetic USD millions. Operating working capital is receivables plus factory inventory less payables; net debt includes corporate and customer-finance debt, less cash.',
     ],
     current, months: [], ending: { ...current }, stopReason: null, warnings: [],
@@ -241,6 +248,7 @@ export function projectBusiness(state, plan, horizon = 3) {
     projectedState = nextState;
     priorReport = report;
     if (nextState.status === 'distressed') { result.stopReason = 'distress'; break; }
+    if (nextState.status === 'dismissed') { result.stopReason = 'dismissal'; break; }
     if (nextState.month === campaignLength(state)) { result.stopReason = campaignLength(state) === 12 ? 'year-end' : 'campaign-end'; break; }
   }
   result.warnings = projectionWarnings(current, result.months);

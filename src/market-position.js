@@ -7,6 +7,8 @@ import { campaignLength } from './campaign-calendar.js';
  */
 import { PRODUCTS, forecast, getMarketOutlook, validatePlan } from './simulation.js';
 import { getMarketIntelligence } from './business-intelligence.js';
+import { getCompetitivePressure } from './competitive-intelligence.js';
+import { getDifficulty } from './executive-rules.js';
 
 const sum = values => values.reduce((total, value) => total + value, 0);
 const ratio = (numerator, denominator) => denominator > 0 ? numerator / denominator : null;
@@ -90,6 +92,11 @@ function productPerception(product, state, actual, predicted, plan, publicOutloo
       financing: clamp(1 + (7.25 - plan.financingApr) * 0.012, 0.9, 1.08),
       reputation: opening.reputation, technology: closing.technology,
       competition: publicOutlook.competitorPressure,
+      ...(state.version === '1.3.0' ? {
+        dealerService: 1 + Math.log1p(plan.dealerSupport) * 0.045,
+        difficulty: getDifficulty(state).demandFactor,
+        rivals: getCompetitivePressure(state),
+      } : {}),
     };
     demandFactors.unroundedDemand = Object.values(demandFactors).reduce((value, factor) => value * factor, 1);
     demandFactors.expectedDemand = expectedFlow.expectedDemand;
@@ -125,6 +132,7 @@ function productPerception(product, state, actual, predicted, plan, publicOutloo
       'Fleet reliability is the model’s smoothed installed-fleet quality index used in warranty claims. It is distinct from the observed first-pass quality of machines assembled this month. No assembly means no measured first-pass rate.',
       'Retail availability is customer requests filled from dealer stock divided by customer requests. Dealer fulfillment is factory deliveries divided by dealer replenishment orders; these are different stages of the sale.',
       'Price, marketing, financing, reputation, technology, public category conditions, and competitive pressure multiply to form expected customer requests. Actual market share also depends on available dealer stock and realized market conditions.',
+      ...(state.version === '1.3.0' ? ['Executive campaigns also multiply dealer service support, the selected difficulty demand factor, and fictional rival benchmark pressure. Rival pressure depends on public rival progression; your technology is counted once in the technology factor. Dealer support changes reputation after this month’s sales, so that reputation benefit first affects later rounds.'] : []),
     ],
   };
 }
@@ -173,7 +181,9 @@ export function getMarketPosition(state, plan) {
       'Actual share needs one completed month; actual change needs two. Future outlook revisions do not rewrite completed months’ industry denominators.',
       'Market growth and company retail growth are separate comparisons. Their difference helps distinguish a changing market from changing relative performance; it does not prove a cause.',
       'Percentage-point share change is different from percentage growth in sales. A share change of 0.01 means +1.0 percentage point.',
-      'No competitor-specific share, customer satisfaction score, or survey result is invented. The competitive-pressure multiplier is the public model input, not a competitor rating.',
+      state.version === '1.3.0'
+        ? 'The separate competitor comparison uses explicitly fictional benchmarks and estimates rival shares by allocating the remaining modeled market. Those are not observed rival sales, CNH disclosures or customer survey results. This view explains the demand model, not a competitor rating.'
+        : 'No competitor-specific share, customer satisfaction score, or survey result is invented in this view. The competitive-pressure multiplier is the public model input, not a competitor rating. The separate fictional benchmark comparison does not change legacy campaign mechanics.',
       'Each demand factor explains the selected forecast’s model mechanics. A single observed share movement cannot establish which decision caused the change.',
     ],
   };

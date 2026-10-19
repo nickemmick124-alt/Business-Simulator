@@ -3,11 +3,14 @@
  * synthetic; none represents an actual CNH factory, forecast or financial result.
  * Money is in USD millions, except price controls (USD thousands). No IO.
  */
+import { getCompetitivePressure } from './competitive-intelligence.js';
+import { DIFFICULTIES, getDifficulty, createEmployment, evaluateEmployment } from './executive-rules.js';
 import { campaignLength, calendarMonth, campaignYear, isCyclicalState } from './campaign-calendar.js';
 
 export const MODEL_VERSION = '1.0.0';
 export const CYCLICAL_MODEL_VERSION = '1.1.0';
 export const MULTI_YEAR_MODEL_VERSION = '1.2.0';
+export const EXECUTIVE_MODEL_VERSION = '1.3.0';
 const MARKET_REGIMES = ['soft', 'flat', 'upswing'];
 const REGIME_LABELS = { soft: 'Soft market', flat: 'Flat market', upswing: 'Upswing market' };
 export const PRODUCTS = Object.freeze([
@@ -32,6 +35,15 @@ export const PLAN_FIELDS = Object.freeze([
   { key: 'capex', label: 'Factory investment', group: 'Investment', min: 0, max: 20, step: 0.5, unit: '$m', help: 'Cash investment in fixed assets. Additional operating capacity arrives after three months.' },
   { key: 'debtChange', label: 'Corporate borrowing / repayment', group: 'Finance', min: -40, max: 40, step: 1, unit: '$m', help: 'Positive draws, negative repays corporate debt, within a $160m facility. Financing loans have separate matched funding.' },
 ].map(Object.freeze));
+
+const EXECUTIVE_PLAN_FIELDS = Object.freeze([
+  { key: 'supplierSupport', label: 'Controller supplier recovery', group: 'Operations', min: 0, max: 3, step: 0.1, unit: '$m', help: 'Expense this month to expedite and support controller supply: +4 percentage points of fulfillment per $1m, capped at 100%. Helps component shortages, not assembly capacity.' },
+  { key: 'dealerSupport', label: 'Dealer service network', group: 'Commercial', min: 0, max: 3, step: 0.1, unit: '$m', help: 'Expense this month for dealer service support: diminishing immediate demand lift and +0.15 reputation percentage points per $1m. Cannot overcome unavailable machines or poor quality.' },
+].map(Object.freeze));
+
+export function getPlanFields(state) {
+  return state?.version === EXECUTIVE_MODEL_VERSION ? [...PLAN_FIELDS, ...EXECUTIVE_PLAN_FIELDS] : PLAN_FIELDS;
+}
 
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
 const sum = values => values.reduce((a, b) => a + b, 0);
@@ -76,6 +88,7 @@ export function createInitialState(seed = 4821, options = {}) {
   if (!options || typeof options !== 'object' || Array.isArray(options)) throw new Error('Campaign options must be an object.');
   if (options.marketRegime !== undefined && ![...MARKET_REGIMES, 'random'].includes(options.marketRegime)) throw new Error('Market regime must be soft, flat, upswing, or random.');
   if (options.campaignMonths !== undefined && ![12, 36].includes(options.campaignMonths)) throw new Error('Campaign length must be 12 or 36 months.');
+  if (options.difficulty !== undefined && !Object.hasOwn(DIFFICULTIES, options.difficulty)) throw new Error('Difficulty must be easy, medium, or difficult.');
   const opening = {
     tractor: { finishedGoods: 62, dealerStock: 310, incomplete: 26, parts: 45, controllers: 9, rework: 7, installedBase: 4600 },
     harvester: { finishedGoods: 19, dealerStock: 112, incomplete: 11, parts: 16, controllers: 3, rework: 3, installedBase: 1750 },
@@ -98,12 +111,19 @@ export function createInitialState(seed = 4821, options = {}) {
   state.initialAdjustedEquity = adjustedEquity(state);
   // Older saves and the one-argument API retain their original exact mechanics.
   // Resolve the initial public scenario once, rather than on every preview.
-  if (options.marketRegime !== undefined || options.campaignMonths === 36) {
+  if (options.marketRegime !== undefined || options.campaignMonths === 36 || options.difficulty !== undefined) {
     const selectedRegime = options.marketRegime ?? 'random';
     const initialRegime = selectedRegime === 'random' ? MARKET_REGIMES[Math.floor(random(seed, 0, 200) * MARKET_REGIMES.length)] : selectedRegime;
     state.version = options.campaignMonths === 36 ? MULTI_YEAR_MODEL_VERSION : CYCLICAL_MODEL_VERSION;
     if (options.campaignMonths === 36) state.campaignMonths = 36;
     state.marketCycle = { initialRegime, observedMonth: 0, agricultureIndex: 1, constructionIndex: 1, supplyIndex: 1 };
+  }
+  if (options.difficulty !== undefined) {
+    state.version = EXECUTIVE_MODEL_VERSION;
+    state.campaignMonths = options.campaignMonths ?? 36;
+    state.difficulty = options.difficulty;
+    state.employment = createEmployment();
+    state.ceoJournal = [];
   }
   return state;
 }
@@ -112,6 +132,7 @@ export function createInitialState(seed = 4821, options = {}) {
 export function createReplayInitialState(state) {
   const checked = validateState(state);
   if (!checked.valid) throw new Error(`Invalid simulation state: ${checked.errors.join(' ')}`);
+  if (state.version === EXECUTIVE_MODEL_VERSION) return createInitialState(state.seed, { marketRegime: state.marketCycle.initialRegime, campaignMonths: state.campaignMonths, difficulty: state.difficulty });
   return createInitialState(state.seed, isCyclicalState(state) ? { marketRegime: state.marketCycle.initialRegime, ...(state.version === MULTI_YEAR_MODEL_VERSION ? { campaignMonths: 36 } : {}) } : {});
 }
 
@@ -122,6 +143,7 @@ export function defaultPlan(state = createInitialState()) {
     loaderPrice: 195, loaderProduction: 156,
     marketing: 1.8, quality: 1.1, rd: 1.5, maintenance: 0.9, training: 0.5,
     financingApr: 7.25, overtime: 0, partsBuffer: 15,
+    ...(state.version === EXECUTIVE_MODEL_VERSION ? { supplierSupport: 0, dealerSupport: 0 } : {}),
     ...(state.history?.length ? state.history[state.history.length - 1].plan : {}),
     // Borrowing and capital spending are one-time commitments, not subscriptions.
     debtChange: 0, capex: 0,
@@ -132,7 +154,7 @@ export function validatePlan(plan, state) {
   const errors = [];
   const normalized = {};
   if (!plan || typeof plan !== 'object' || Array.isArray(plan)) return { valid: false, errors: ['A numeric operating plan is required.'], plan: normalized };
-  for (const field of PLAN_FIELDS) {
+  for (const field of getPlanFields(state)) {
     const value = plan[field.key];
     if (!finite(value)) errors.push(`${field.label} must be a finite number.`);
     else if (value < field.min || value > field.max) errors.push(`${field.label} must be between ${field.min} and ${field.max} ${field.unit}.`);
@@ -149,7 +171,7 @@ export function validatePlan(plan, state) {
 
 function legacyMarketOutlook(state) {
   const month = Math.min(campaignLength(state), state.month + 1);
-  const seasonMonth = state.version === MULTI_YEAR_MODEL_VERSION ? calendarMonth(month) : month;
+  const seasonMonth = campaignLength(state) > 12 ? calendarMonth(month) : month;
   const agriculturalSeason = [0.94, 0.98, 1.06, 1.12, 1.14, 1.04, 0.94, 1.03, 1.15, 1.1, 0.91, 0.85][seasonMonth - 1];
   const constructionSeason = [0.92, 0.96, 1.05, 1.1, 1.12, 1.1, 1.06, 1.05, 1.02, 0.98, 0.92, 0.88][seasonMonth - 1];
   return {
@@ -167,7 +189,7 @@ function legacyMarketOutlook(state) {
 // Factors are relative to the original public category seasonality. They are
 // synthetic scenarios, not estimates of historical industry growth.
 function scenarioIndex(regime, month, state) {
-  if (state?.version === MULTI_YEAR_MODEL_VERSION && month > 12) {
+  if (campaignLength(state) > 12 && month > 12) {
     // The declared first-year backdrop gradually normalizes. Observed surprises
     // continue to carry momentum; neither annual seasons nor the seed reset.
     const firstYearEnd = scenarioIndex(regime, 12);
@@ -217,7 +239,7 @@ export function getMarketOutlook(state) {
   const base = legacyMarketOutlook(state);
   if (!isCyclicalState(state)) return base;
   const factors = expectedCategoryFactors(state, base.month);
-  const yearStart = state.version === MULTI_YEAR_MODEL_VERSION ? (campaignYear(base.month) - 1) * 12 : 0;
+  const yearStart = campaignLength(state) > 12 ? (campaignYear(base.month) - 1) * 12 : 0;
   const annual = sum(Array.from({ length: 12 }, (_, index) => industryUnits(expectedCategoryFactors(state, yearStart + index + 1))));
   const flatAnnual = sum(Array.from({ length: 12 }, (_, index) => industryUnits(categoryFactors(yearStart + index + 1, scenarioIndex('flat', yearStart + index + 1, state), state))));
   const expectedAnnualChange = annual / flatAnnual - 1;
@@ -235,18 +257,20 @@ export function getMarketOutlook(state) {
 function realizedCycleIndex(state, month) {
   // Rebuild the exogenous path independently of operating decisions. Comparing
   // alternate plans therefore exposes them to exactly the same month's shocks.
+  const shockScale = state.version === EXECUTIVE_MODEL_VERSION ? getDifficulty(state).shockScale : 1;
   let momentum = 0, supplyDeviation = 0, indices, demandPulse = 0, supplierShock = false;
   for (let current = 1; current <= month; current += 1) {
     const turn = random(state.seed, current, 102);
     demandPulse = turn < 0.075 ? -0.15 - random(state.seed, current, 103) * 0.08
       : turn > 0.925 ? 0.12 + random(state.seed, current, 103) * 0.07 : 0;
-    momentum = clamp(momentum * 0.82 + (random(state.seed, current, 101) - 0.5) * 0.07 + demandPulse, -0.35, 0.35);
+    if (state.version === EXECUTIVE_MODEL_VERSION) demandPulse *= shockScale;
+    momentum = clamp(momentum * 0.82 + (random(state.seed, current, 101) - 0.5) * 0.07 * shockScale + demandPulse, -0.35 * shockScale, 0.35 * shockScale);
     supplierShock = random(state.seed, current, 105) < 0.12;
-    supplyDeviation = clamp(supplyDeviation * 0.45 - (supplierShock ? 0.18 + random(state.seed, current, 106) * 0.08 : 0), -0.45, 0);
+    supplyDeviation = clamp(supplyDeviation * 0.45 - (supplierShock ? (0.18 + random(state.seed, current, 106) * 0.08) * shockScale : 0), -0.45 * shockScale, 0);
     const baseline = scenarioIndex(state.marketCycle.initialRegime, current, state);
     indices = {
       agricultureIndex: baseline.agricultureIndex * (1 + momentum),
-      constructionIndex: baseline.constructionIndex * (1 + momentum * 0.75 + (random(state.seed, current, 104) - 0.5) * 0.025),
+      constructionIndex: baseline.constructionIndex * (1 + momentum * 0.75 + (random(state.seed, current, 104) - 0.5) * 0.025 * shockScale),
       supplyIndex: 1 + supplyDeviation,
     };
   }
@@ -287,13 +311,17 @@ function resolve(inputState, inputPlan, isForecast) {
   if (!checked.valid) throw new Error(checked.errors.join(' '));
   const state = copy(inputState);
   const plan = checked.plan;
+  const executive = state.version === EXECUTIVE_MODEL_VERSION;
+  const difficulty = executive ? getDifficulty(state) : null;
+  const supplierSupport = executive ? plan.supplierSupport : 0;
+  const dealerSupport = executive ? plan.dealerSupport : 0;
   const month = state.month + 1;
   const opening = balanceSheet(state);
   const outlook = getMarketOutlook(state);
   const resolvedMarket = resolveMarket(state, outlook, isForecast);
   const productReports = [];
   const events = resolvedMarket ? copy(resolvedMarket.context.events) : [];
-  const actualVariation = channel => isForecast ? 0.5 : random(state.seed, month, channel);
+  const actualVariation = channel => isForecast ? 0.5 : executive ? clamp(0.5 + (random(state.seed, month, channel) - 0.5) * difficulty.shockScale, 0, 1) : random(state.seed, month, channel);
   let procurement = 0, conversion = 0, wholesaleRevenue = 0, cogs = 0, newLending = 0;
   let overtimeExpense = 0, reworkExpense = 0, warrantyAccrual = 0, warrantyClaims = 0;
   let completedInvestment = 0, completedEngineering = 0;
@@ -325,7 +353,8 @@ function resolve(inputState, inputPlan, isForecast) {
     s.quality = clamp(s.quality + plan.quality * 0.0025 + plan.training * 0.0015 - 0.0032 - plan.overtime * 0.00018, 0.84, 0.992);
     const capacity = Math.floor(p.capacity * s.condition * (0.9 + s.skill * 0.1) * (1 + state.capacityBonus) * (1 + plan.overtime * 0.0065));
     const marketSupply = resolvedMarket ? resolvedMarket.context.realized.controllerSupply : outlook.controllerSupply;
-    const supplyRate = clamp(marketSupply * (0.88 + actualVariation(20 + index) * 0.24) + plan.quality * 0.004, 0.45, 1);
+    const baseSupplyRate = clamp(marketSupply * (0.88 + actualVariation(20 + index) * 0.24) + plan.quality * 0.004, 0.45, 1);
+    const supplyRate = executive ? clamp(baseSupplyRate + supplierSupport * 0.04, 0.45, 1) : baseSupplyRate;
     const kitOrder = Math.max(0, Math.ceil(target * (1 + plan.partsBuffer / 100)) - s.parts - s.incomplete);
     const controllerOrder = Math.max(0, Math.ceil(target * (1 + plan.partsBuffer / 100)) - s.controllers);
     const kitReceipts = Math.min(kitOrder, Math.floor(p.capacity * 1.25));
@@ -358,8 +387,9 @@ function resolve(inputState, inputPlan, isForecast) {
     const market = p.segment === 'Agriculture' ? outlook.agriculture : outlook.construction;
     const priceResponse = Math.pow(p.basePrice / price, 1.65);
     const marketingResponse = 0.88 + 0.15 * Math.log1p(plan.marketing);
+    const dealerResponse = executive ? 1 + Math.log1p(dealerSupport) * 0.045 : 1;
     const financingResponse = clamp(1 + (7.25 - plan.financingApr) * 0.012, 0.9, 1.08);
-    const expectedDemand = Math.max(0, Math.round(p.baseDemand * market * priceResponse * marketingResponse * financingResponse * s.reputation * s.technology * outlook.competitorPressure));
+    const expectedDemand = Math.max(0, Math.round(p.baseDemand * market * priceResponse * marketingResponse * financingResponse * s.reputation * s.technology * outlook.competitorPressure * dealerResponse * (difficulty?.demandFactor ?? 1) * getCompetitivePressure(inputState)));
     const actualMarket = resolvedMarket ? (p.segment === 'Agriculture' ? resolvedMarket.context.realized.agriculture : resolvedMarket.context.realized.construction) : market;
     const orderDemand = resolvedMarket ? Math.max(0, Math.round(expectedDemand * actualMarket / market)) : expectedDemand;
     const demand = Math.max(0, Math.round(orderDemand * (0.91 + actualVariation(10 + index) * 0.18)));
@@ -384,7 +414,7 @@ function resolve(inputState, inputPlan, isForecast) {
     s.warrantyQuality = s.warrantyQuality * 0.93 + s.quality * 0.07;
     s.installedBase = Math.round(s.installedBase * 0.992) + retailSales;
     const deliveredService = dealerOrders ? deliveries / dealerOrders : 1;
-    s.reputation = clamp(s.reputation + (s.quality - 0.958) * 0.1 + (deliveredService - 0.94) * 0.018 - lostSales / Math.max(1, demand) * 0.025, 0.68, 1.08);
+    s.reputation = clamp(s.reputation + (s.quality - 0.958) * 0.1 + (deliveredService - 0.94) * 0.018 - lostSales / Math.max(1, demand) * 0.025 + dealerSupport * 0.0015, 0.68, 1.08);
     s.lastPrice = price;
     const shortage = Math.max(0, Math.min(target, assemblyCapacity) - assembled);
     const missedOrders = dealerOrders - deliveries;
@@ -431,7 +461,7 @@ function resolve(inputState, inputPlan, isForecast) {
   const fixedFactoryExpense = 4.1;
   const corporateExpense = 2.15;
   const inventoryCarryingExpense = inputState.inventoryValue * 0.004;
-  const operatingExpense = fixedFactoryExpense + corporateExpense + plan.marketing + plan.quality + plan.maintenance + plan.training + plan.rd + overtimeExpense + reworkExpense + inventoryCarryingExpense;
+  const operatingExpense = fixedFactoryExpense + corporateExpense + plan.marketing + plan.quality + plan.maintenance + plan.training + plan.rd + overtimeExpense + reworkExpense + inventoryCarryingExpense + supplierSupport + dealerSupport;
   const warrantyShortfall = Math.max(0, warrantyClaims - inputState.warrantyReserve - warrantyAccrual);
   const totalRevenue = wholesaleRevenue + loanInterestIncome;
   const operatingProfit = totalRevenue - cogs - operatingExpense - depreciation - warrantyAccrual - warrantyShortfall - creditLosses;
@@ -494,6 +524,7 @@ function resolve(inputState, inputPlan, isForecast) {
       wholesaleRevenue: money(wholesaleRevenue), loanInterestIncome: money(loanInterestIncome), revenue: money(totalRevenue),
       cogs: money(cogs), grossProfit: money(totalRevenue - cogs), fixedFactoryExpense, corporateExpense,
       marketing: plan.marketing, quality: plan.quality, maintenance: plan.maintenance, training: plan.training, rd: plan.rd,
+      ...(executive ? { supplierSupport, dealerSupport } : {}),
       overtimeExpense: money(overtimeExpense), reworkExpense: money(reworkExpense), inventoryCarryingExpense: money(inventoryCarryingExpense),
       operatingExpense: money(operatingExpense), depreciation: money(depreciation), warrantyAccrual: money(warrantyAccrual),
       warrantyShortfall: money(warrantyShortfall), creditLosses: money(creditLosses), operatingProfit: money(operatingProfit),
@@ -512,6 +543,13 @@ function resolve(inputState, inputPlan, isForecast) {
     reconciliation: { balanceSheet: bs.reconciliation, inventory: money(state.inventoryValue - inputState.inventoryValue - procurement - conversion + cogs), cash: money(state.cash - inputState.cash - cashChange), loanBook: money(state.loanBook - loanOpening - newLending + loanPrincipalCollections + creditLosses) },
   };
   if (resolvedMarket) report.marketContext = resolvedMarket.context;
+  if (executive) {
+    const assessment = evaluateEmployment(inputState.employment, report, state);
+    state.employment = assessment.employment;
+    report.employment = assessment.review;
+    if (state.status !== 'distressed' && state.employment.status === 'dismissed') state.status = 'dismissed';
+    if (state.employment.strikes > inputState.employment.strikes || state.employment.status === 'dismissed') events.push({ id: `employment-${month}`, title: state.employment.status === 'dismissed' ? 'The board ends your tenure' : state.employment.status === 'probation' ? 'Board probation: final warning' : 'Board performance warning', detail: report.employment.message, type: state.employment.status === 'warning' ? 'warning' : 'danger', location: 'headquarters' });
+  }
   if (!events.length) events.push({ id: `steady-${month}`, title: 'Operations are on plan', detail: 'Review demand, cash conversion and inventory before increasing production.', type: 'info', location: 'headquarters' });
   state.history.push(copy(report));
   return { state, report };
@@ -538,9 +576,9 @@ export function getCampaignOutcome(state) {
   const qualityScore = clamp((averageQuality - 0.85) / 0.14 * 15, 0, 15);
   const capabilityScore = clamp((capability - 0.7) / 0.35 * 15, 0, 15);
   const liquidityPenalty = state.cash < 0 ? Math.min(35, -state.cash) : 0;
-  const score = Math.round(clamp(financialScore + serviceScore + qualityScore + capabilityScore - liquidityPenalty, 0, state.status === 'distressed' ? 39 : 100));
+  const score = Math.round(clamp(financialScore + serviceScore + qualityScore + capabilityScore - liquidityPenalty, 0, ['distressed', 'dismissed'].includes(state.status) ? 39 : 100));
   const complete = state.status !== 'active' || state.month >= campaignLength(state);
-  const title = state.status === 'distressed' ? 'The board ends your mandate' : score >= 80 ? 'A stronger business' : score >= 60 ? campaignLength(state) > 12 ? 'A credible tenure' : 'A credible first year' : score >= 40 ? 'A turnaround still in progress' : 'A business under pressure';
+  const title = ['distressed', 'dismissed'].includes(state.status) ? 'The board ends your mandate' : score >= 80 ? 'A stronger business' : score >= 60 ? campaignLength(state) > 12 ? 'A credible tenure' : 'A credible first year' : score >= 40 ? 'A turnaround still in progress' : 'A business under pressure';
   return {
     complete, status: state.status, month: state.month, score, title,
     summary: `Adjusted company value ${gain >= 0 ? 'grew' : 'fell'} by $${Math.abs(gain).toFixed(1)}m. Average dealer delivery was ${Math.round(averageService * 100)}%; first-pass quality was ${Math.round(averageQuality * 100)}%.`,
@@ -580,7 +618,20 @@ function validateMarketContext(context, label, errors) {
   if (!Array.isArray(context.events) || context.events.length > 8 || context.events.some(event => !isRecord(event) || ['id', 'title', 'detail', 'type', 'location'].some(key => !validText(event[key])))) errors.push(`${label} market events must contain the required text fields.`);
 }
 
-function validateReport(report, index, errors) {
+function validateEmployment(value, month, errors, label, review = false, difficultyId) {
+  const profile = getDifficulty(difficultyId);
+  if (!isRecord(value) || ['strikes', 'badMonths', 'goodMonths'].some(key => !Number.isInteger(value[key]) || value[key] < 0 || value[key] > month) || value.lastReviewMonth !== month || !['secure', 'warning', 'probation', 'dismissed'].includes(value.status)) {
+    errors.push(`${label} must contain valid monthly employment counters.`);
+    return;
+  }
+  if (profile) {
+    const expectedStatus = value.strikes >= profile.strikeLimit ? 'dismissed' : value.strikes >= profile.strikeLimit - 1 ? 'probation' : value.strikes > 0 ? 'warning' : 'secure';
+    if (expectedStatus !== value.status || value.strikes > profile.strikeLimit) errors.push(`${label} status does not match its unresolved strikes.`);
+  }
+  if (review && (typeof value.isForecast !== 'boolean' || typeof value.poorMonth !== 'boolean' || typeof value.strongMonth !== 'boolean' || typeof value.graceActive !== 'boolean' || !finite(value.performanceScore) || value.performanceScore < 0 || value.performanceScore > 100 || value.strikeLimit !== profile?.strikeLimit || value.graceMonths !== profile?.graceMonths || !validText(value.message) || !validText(value.methodology) || !Array.isArray(value.reasons) || value.reasons.length > 8 || value.reasons.some(reason => !validText(reason)) || !Array.isArray(value.signals) || value.signals.length !== 5 || value.signals.some(signal => !isRecord(signal) || !validText(signal.id) || !validText(signal.label) || typeof signal.failed !== 'boolean' || !finite(signal.actual) || !finite(signal.threshold)))) errors.push(`${label} assessment is invalid.`);
+}
+
+function validateReport(report, index, errors, state) {
   const label = `Report ${index + 1}`;
   if (!isRecord(report) || report.month !== index + 1) {
     errors.push(`${label} is missing or out of sequence.`);
@@ -596,8 +647,12 @@ function validateReport(report, index, errors) {
   numericRecord(report.openingBalanceSheet, BALANCE_KEYS, 'opening balance sheet');
   numericRecord(report.financing, FINANCING_KEYS, 'financing');
   numericRecord(report.reconciliation, ['balanceSheet', 'inventory', 'cash', 'loanBook'], 'reconciliation');
+  if (state?.version === EXECUTIVE_MODEL_VERSION) {
+    numericRecord(report.income, ['supplierSupport', 'dealerSupport'], 'executive spending');
+    validateEmployment(report.employment, index + 1, errors, `${label} employment`, true, state.difficulty);
+  }
   if (Object.hasOwn(report, 'planningForecast')) numericRecord(report.planningForecast, METRIC_KEYS, 'planning forecast');
-  if (!validatePlan(report.plan).valid) errors.push(`${label} contains an invalid committed plan.`);
+  if (!validatePlan(report.plan, state?.version === EXECUTIVE_MODEL_VERSION ? { ...state, status: 'active', month: index, corporateDebt: report.openingBalanceSheet?.corporateDebt ?? 80 } : undefined).valid) errors.push(`${label} contains an invalid committed plan.`);
 
   if (!Array.isArray(report.products) || report.products.length !== PRODUCTS.length) errors.push(`${label} must contain one flow for each product.`);
   else {
@@ -626,9 +681,9 @@ function validateReport(report, index, errors) {
 export function validateState(state) {
   const errors = [];
   if (!state || typeof state !== 'object' || Array.isArray(state)) return { valid: false, errors: ['State must be an object.'] };
-  if (![MODEL_VERSION, CYCLICAL_MODEL_VERSION, MULTI_YEAR_MODEL_VERSION].includes(state.version)) errors.push('Unsupported save version.');
+  if (![MODEL_VERSION, CYCLICAL_MODEL_VERSION, MULTI_YEAR_MODEL_VERSION, EXECUTIVE_MODEL_VERSION].includes(state.version)) errors.push('Unsupported save version.');
   if (state.version === MULTI_YEAR_MODEL_VERSION && state.campaignMonths !== 36) errors.push('Three-year campaigns must declare 36 months.');
-  if (state.version !== MULTI_YEAR_MODEL_VERSION && state.campaignMonths !== undefined && state.campaignMonths !== 12) errors.push('Legacy campaigns cannot change their original length.');
+  if (![MULTI_YEAR_MODEL_VERSION, EXECUTIVE_MODEL_VERSION].includes(state.version) && state.campaignMonths !== undefined && state.campaignMonths !== 12) errors.push('Legacy campaigns cannot change their original length.');
   const length = campaignLength(state);
   if (!Number.isInteger(state.seed) || state.seed < 0 || state.seed > 4294967295) errors.push('Invalid seed.');
   if (!Number.isInteger(state.month) || state.month < 0 || state.month > length) errors.push(`Month must be 0–${length}.`);
@@ -636,7 +691,7 @@ export function validateState(state) {
     if (!finite(state[key])) errors.push(`${key} must be finite.`);
     else if (!['cash', 'equity', 'initialEquity', 'initialAdjustedEquity'].includes(key) && state[key] < -1e-7) errors.push(`${key} cannot be negative.`);
   }
-  if (!['active', 'completed', 'distressed'].includes(state.status)) errors.push('Invalid campaign status.');
+  if (!(state.version === EXECUTIVE_MODEL_VERSION ? ['active', 'completed', 'distressed', 'dismissed'] : ['active', 'completed', 'distressed']).includes(state.status)) errors.push('Invalid campaign status.');
   if (state.month === length && state.status === 'active') errors.push(`A ${length}-month campaign must be complete.`);
   if (state.status === 'completed' && state.month !== length) errors.push(`A completed campaign must contain ${length} months.`);
   for (const p of PRODUCTS) {
@@ -649,7 +704,16 @@ export function validateState(state) {
     if (s.quality > 1 || s.warrantyQuality > 1) errors.push(`${p.id} quality cannot exceed 100%.`);
   }
   if (!Array.isArray(state.history) || state.history.length !== state.month || state.history.length > length) errors.push(`History must contain one report per completed month, up to ${length}.`);
-  else for (let i = 0; i < state.history.length; i += 1) validateReport(state.history[i], i, errors);
+  else for (let i = 0; i < state.history.length; i += 1) validateReport(state.history[i], i, errors, state);
+  if (state.version === EXECUTIVE_MODEL_VERSION) {
+    if (![12, 36].includes(state.campaignMonths)) errors.push('Executive campaigns must declare 12 or 36 months.');
+    if (!getDifficulty(state)) errors.push('Executive campaigns require a valid difficulty.');
+    validateEmployment(state.employment, state.month, errors, 'Employment', false, state.difficulty);
+    if (state.employment?.status === 'dismissed' && !['dismissed', 'distressed'].includes(state.status)) errors.push('A dismissed CEO cannot continue the campaign.');
+    if (state.status === 'dismissed' && state.employment?.status !== 'dismissed') errors.push('Dismissal must reconcile to the employment record.');
+    if (state.ceoJournal !== undefined && (!Array.isArray(state.ceoJournal) || state.ceoJournal.length > length || state.ceoJournal.some(entry => !isRecord(entry) || !Number.isInteger(entry.month) || entry.month < 1 || entry.month > Math.min(length, state.month + 1) || !Array.isArray(entry.visited) || entry.visited.length > 16 || entry.visited.some(id => !['cfo', 'sales', 'strategy', 'operations', 'quality', 'supply'].includes(id)) || new Set(entry.visited).size !== entry.visited.length) || new Set(state.ceoJournal.map(entry => entry.month)).size !== state.ceoJournal.length)) errors.push('CEO journal must contain bounded monthly visit records.');
+    if (Array.isArray(state.history) && state.history.length && Object.keys(createEmployment()).some(key => state.employment?.[key] !== state.history.at(-1)?.employment?.[key])) errors.push('Employment does not reconcile to the latest report.');
+  }
   if (isCyclicalState(state)) {
     const cycle = state.marketCycle;
     if (!isRecord(cycle) || !MARKET_REGIMES.includes(cycle.initialRegime) || cycle.observedMonth !== state.month || ['agricultureIndex', 'constructionIndex', 'supplyIndex'].some(key => !finite(cycle[key]) || cycle[key] < 0.3 || cycle[key] > 2)) errors.push('Cyclical campaigns require a valid observed market state.');
